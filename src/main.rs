@@ -1,7 +1,7 @@
 //! The simplest possible example that does something.
 // cargo run --release -- -C target=cpu_native
 #![allow(clippy::unnecessary_wraps)]
-
+// test
 use ggez::graphics::{DrawMode, DrawParam, Mesh, MeshBuilder};
 use ggez::input::keyboard::{KeyCode, KeyInput, KeyMods};
 use ggez::timer::{self, TimeContext};
