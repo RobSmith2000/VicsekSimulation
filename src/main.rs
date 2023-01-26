@@ -2,8 +2,9 @@
 // cargo run --release -- -C target=cpu_native
 #![allow(clippy::unnecessary_wraps)]
 // test
-use ggez::graphics::{DrawMode, DrawParam, Mesh, MeshBuilder};
+use ggez::graphics::{DrawMode, DrawParam, Image, Mesh, MeshBuilder, PxScale};
 use ggez::input::keyboard::{KeyCode, KeyInput, KeyMods};
+use ggez::mint::Point2;
 use ggez::timer::{self, TimeContext};
 use ggez::winit::platform::unix::x11::ffi::WindingRule;
 use ggez::{
@@ -131,7 +132,7 @@ fn velandind(
                 randangle += rng.gen_range((-noise / 2.0)..(noise / 2.0)) as f32;
             }
             let mut updatedangle = arctan + randangle;
-            // println!("update angle{:?}", updatedangle);
+            // println!("update angle{:?}", updatedangle * (180. / 3.14));
             // newlist[*activepartiindex][2] = updatedangle;
             let mut newpair = vec![*activepartiindex as f32, updatedangle];
             outputvec.push(newpair)
@@ -140,7 +141,47 @@ fn velandind(
     return outputvec;
 }
 
-const WINSIZE: f32 = 700.0;
+fn convert_hsv_to_rgb(pixel: &Vec<f32>) -> [f32; 3] {
+    let [hue, saturation, value] = [pixel[0], pixel[1] / 100., pixel[2] / 100.];
+    let max = value;
+    let c = saturation * value;
+    let min = max - c;
+    let h_prime = if hue >= 300. {
+        (hue - 360.) / 60.
+    } else {
+        hue / 60.
+    };
+    let (r, g, b) = match h_prime {
+        x if -1. <= x && x < 1. => {
+            if h_prime < 0. {
+                (max, min, min - h_prime * c)
+            } else {
+                (max, min + h_prime * c, min)
+            }
+        }
+        x if 1. <= x && x < 3. => {
+            if h_prime < 2. {
+                (min - (h_prime - 2.) * c, max, min)
+            } else {
+                (min, max, min + (h_prime - 2.) * c)
+            }
+        }
+        x if 3. <= x && x < 5. => {
+            if h_prime < 4. {
+                (min, min - (h_prime - 4.) * c, max)
+            } else {
+                (min + (h_prime - 4.) * c, min, max)
+            }
+        }
+        _ => unreachable!(),
+    };
+    [r, g, b]
+    // [r * 255., g * 255., b * 255.]
+}
+
+// const WINSIZE: f32 = 700.0;
+const WINSIZE: f32 = 900.0;
+const debugtime: i32 = 0;
 
 struct MainState {
     circle: graphics::Mesh,
@@ -148,12 +189,14 @@ struct MainState {
     time: i32,
     noise: f32,
     boxlen: f32,
+    blindangle: f32,
     speed: f32,
     partilist: Vec<Vec<f32>>,
     normvel: f32,
     fps: u32,
     visualiseflag: u32,
     updateflag: u32,
+    colorflag: u32,
 }
 
 impl MainState {
@@ -167,8 +210,8 @@ impl MainState {
             Color::WHITE,
         )?;
 
-        let mut partinum = 200;
-        let boxlen: f32 = 50.0;
+        let mut partinum = 2;
+        let boxlen: f32 = 20.0;
 
         let intrad = graphics::Mesh::new_circle(
             ctx,
@@ -188,14 +231,16 @@ impl MainState {
             circle,
             intrad,
             time: 0,
-            noise: 2.0,
+            noise: 0.3,
             speed: 0.03,
+            blindangle: 30.,
             partilist: parti_list,
             boxlen: boxlen,
             normvel: 1.0,
             fps: 30,
             updateflag: 0,
             visualiseflag: 1,
+            colorflag: 0,
         })
     }
 }
@@ -258,7 +303,25 @@ impl event::EventHandler<ggez::GameError> for MainState {
                 ];
                 self.partilist.push(newparti);
             }
+            if k_ctx.is_key_pressed(KeyCode::O) {
+                self.blindangle += 1.;
+                if k_ctx.is_mod_active(ggez::input::keyboard::KeyMods::SHIFT) {
+                    self.blindangle += 10.
+                }
+                if self.blindangle > 360.0 {
+                    self.blindangle = 360.0
+                }
+            }
 
+            if k_ctx.is_key_pressed(KeyCode::P) {
+                self.blindangle -= 1.;
+                if k_ctx.is_mod_active(ggez::input::keyboard::KeyMods::SHIFT) {
+                    self.blindangle -= 10.
+                }
+                if self.blindangle < 0.0 {
+                    self.blindangle = 0.0
+                }
+            }
             if k_ctx.is_key_pressed(KeyCode::Q) {
                 let mut rng = rand::thread_rng();
                 let newparti = vec![
@@ -314,6 +377,12 @@ impl event::EventHandler<ggez::GameError> for MainState {
             };
             if k_ctx.is_key_pressed(KeyCode::B) {
                 self.visualiseflag = 0;
+            };
+            if k_ctx.is_key_pressed(KeyCode::G) {
+                self.colorflag = 1;
+            };
+            if k_ctx.is_key_pressed(KeyCode::H) {
+                self.colorflag = 0;
             };
             if k_ctx.is_key_pressed(KeyCode::E) {
                 let len = self.partilist.len();
@@ -429,8 +498,59 @@ impl event::EventHandler<ggez::GameError> for MainState {
                 };
             }
             let elapsed = now.elapsed();
-            if self.time % 100 == 0 {
-                println!("position update: {:.2?}", elapsed);
+            // if (self.time % 100 == 0) & (debugtime == 1) {
+            //     println!("position update: {:.2?}", elapsed);
+            // }
+            if (self.time % 100 == 0) {
+                let partix = self.partilist[0][0];
+                let partiy = self.partilist[0][1];
+                let partia = self.partilist[0][2];
+
+                let parti2x = self.partilist[1][0];
+                let parti2y = self.partilist[1][1];
+
+                let ax = partia.sin();
+                let ay = partia.cos();
+                let mut bx = parti2x - partix;
+                let mut by = parti2y - partiy;
+
+                //     // 3x3 box correction with periodic boundry conditions
+                //     // if (bx).abs() > 2.0 {
+                //     //     println!("overflow in x");
+                //     //     if parti2x > partix {
+                //     //         bx -= self.boxlen;
+                //     //     } else {
+                //     //         bx += self.boxlen;
+                //     //     }
+                // }
+                // if (by).abs() > 2.0 {
+                //     // println!("overflow in y ");
+                //     if parti2y > partiy {
+                //         by -= self.boxlen;
+                //     } else {
+                //         by += self.boxlen;
+                //     }
+                // }
+
+                let dot = ((ax * bx) + (ay * by)) / ((bx * bx) + (by * by)).sqrt();
+
+                println!("diff angle: {:.2?}", dot.acos() * (180. / 3.14));
+
+                if dot.acos() < (self.blindangle / 2.0) * (3.14 / 180.) {
+                    println!("red parti can see white parti");
+                }
+
+                //     // now need to create a blind angle checker u
+                //     // println!(
+                //     //     "viewing angle range : {:.2?}, {:.2}",
+                //     //     (angle - seeingangle / 2.0) * (180. / 3.14),
+                //     //     (angle + seeingangle / 2.0) * (180. / 3.14),
+                //     // );
+                //     // println!(
+                //     //     "atan2: {:.2?}",
+                //     //     (f32::atan2(self.partilist[0][1] - center, self.partilist[0][0] - center)
+                //     //         * (180. / 3.14))
+                //     // );
             }
 
             /// creating hash mapping
@@ -448,7 +568,8 @@ impl event::EventHandler<ggez::GameError> for MainState {
                     .push(parti_indx);
             }
             let elapsed = now.elapsed();
-            if self.time % 100 == 0 {
+            // if self.time % 100 == 0 {
+            if (self.time % 100 == 0) & (debugtime == 1) {
                 println!("hashmap update: {:.2?}", elapsed);
             }
             // all code to go between this
@@ -539,7 +660,8 @@ impl event::EventHandler<ggez::GameError> for MainState {
                 self.partilist[change[0] as usize][2] = change[1]
             }
             let elapsed = now.elapsed();
-            if self.time % 100 == 0 {
+            // if self.time % 100 == 0 {
+            if (self.time % 100 == 0) & (debugtime == 1) {
                 println!("velocity update: {:.2?}", elapsed);
             }
             // all new code to go above this
@@ -575,6 +697,15 @@ impl event::EventHandler<ggez::GameError> for MainState {
                 if self.partilist.len() > 0 {
                     let mut mesh_builder = MeshBuilder::new();
                     for particle in self.partilist.iter() {
+                        let mut particolor = Color::WHITE;
+                        if self.colorflag == 1 {
+                            let [r, g, b] = convert_hsv_to_rgb(&vec![
+                                particle[2].rem_euclid(2. * 3.14) * (180. / 3.14),
+                                100.0,
+                                100.0,
+                            ]);
+                            particolor = Color::new(r, g, b, 1.0);
+                        }
                         mesh_builder.circle(
                             DrawMode::fill(),
                             Vec2::new(
@@ -583,11 +714,21 @@ impl event::EventHandler<ggez::GameError> for MainState {
                             ),
                             2.0,
                             10.0,
-                            Color::WHITE,
+                            particolor, // Color::new(r, g, b, 1.0),
                         );
                     }
 
                     for particle in self.partilist.iter() {
+                        let mut particolor = Color::WHITE;
+                        if self.colorflag == 1 {
+                            let [r, g, b] = convert_hsv_to_rgb(&vec![
+                                particle[2].rem_euclid(2. * 3.14) * (180. / 3.14),
+                                100.0,
+                                100.0,
+                            ]);
+                            particolor = Color::new(r, g, b, 1.0);
+                        };
+
                         mesh_builder.line(
                             &[
                                 Vec2::new(
@@ -601,9 +742,20 @@ impl event::EventHandler<ggez::GameError> for MainState {
                                 ),
                             ],
                             1.0,
-                            Color::WHITE,
+                            particolor,
                         );
                     }
+
+                    if self.colorflag == 1 {
+                        let img = graphics::Image::from_path(ctx, "/pngwing.com.png")?;
+                        canvas.draw(
+                            &img,
+                            graphics::DrawParam::new()
+                                .dest([WINSIZE + 10., 250.])
+                                .scale([0.3, 0.3]),
+                        );
+                    }
+
                     // let mesh = mesh_builder.build();
                     let mesh = Mesh::from_data(ctx, mesh_builder.build());
                     canvas.draw(&mesh, DrawParam::default());
@@ -613,7 +765,7 @@ impl event::EventHandler<ggez::GameError> for MainState {
                         graphics::DrawMode::fill(),
                         vec2(0., 0.),
                         WINSIZE / (self.boxlen * 2.0),
-                        2.0,
+                        1.0,
                         Color::RED,
                     )?;
 
@@ -622,7 +774,7 @@ impl event::EventHandler<ggez::GameError> for MainState {
                         graphics::DrawMode::fill(),
                         vec2(0., 0.),
                         4.0,
-                        2.0,
+                        1.0,
                         Color::RED,
                     )?;
 
@@ -662,10 +814,48 @@ impl event::EventHandler<ggez::GameError> for MainState {
                             (self.boxlen - self.partilist[0][1]) * (WINSIZE / self.boxlen),
                         ),
                     );
+
+                    // building a function that gives blind angle arc
+                    fn semicircle(angle: f32, boxlen: f32) -> [Point2<f32>; 361] {
+                        let mut points = [Point2::from([0.0, 0.0]); 361];
+
+                        for i in 0..360 {
+                            points[i] = Point2::from([
+                                0.0 + (((360. - angle) / 360.) * (3.14 / 180.) * (i as f32) as f32)
+                                    .sin()
+                                    * WINSIZE
+                                    / (boxlen * 2.1),
+                                0.0 + (((360. - angle) / 360.) * (3.14 / 180.) * (i as f32) as f32)
+                                    .cos()
+                                    * WINSIZE
+                                    / (boxlen * 2.1),
+                            ])
+                        }
+                        return points;
+                    }
+
+                    let blindarc = graphics::Mesh::new_polygon(
+                        ctx,
+                        graphics::DrawMode::fill(),
+                        &semicircle(self.blindangle, self.boxlen),
+                        Color::GREEN,
+                    )?;
+
+                    canvas.draw(
+                        &blindarc,
+                        DrawParam::new()
+                            .dest(vec2(
+                                self.partilist[0][0] * (WINSIZE / self.boxlen),
+                                (self.boxlen - self.partilist[0][1]) * (WINSIZE / self.boxlen),
+                            ))
+                            .rotation(self.partilist[0][2] - self.blindangle * (3.14 / 360.)),
+                    );
                 }
             }
+
             // Draw text box of parameters and draw to screen
             let time = format!("Time: {}", self.time);
+            // time.set_scale(20.0);
             canvas.draw(&graphics::Text::new(time), Vec2::new(WINSIZE + 10.0, 10.0));
 
             let speed_str = format!("Speed: {:.2}", self.speed);
@@ -674,22 +864,16 @@ impl event::EventHandler<ggez::GameError> for MainState {
                 Vec2::new(WINSIZE + 10.0, 30.0),
             );
 
-            let noise_str = format!("Noise: {:.1}", self.noise);
-            canvas.draw(
-                &graphics::Text::new(noise_str),
-                Vec2::new(WINSIZE + 10.0, 50.0),
-            );
-
             let partinum_str = format!("Num of Particles: {:.1}", self.partilist.len());
             canvas.draw(
                 &graphics::Text::new(partinum_str),
-                Vec2::new(WINSIZE + 10.0, 70.0),
+                Vec2::new(WINSIZE + 10.0, 50.0),
             );
 
             let boxlen_str = format!("Box Length: {:.1}", self.boxlen);
             canvas.draw(
                 &graphics::Text::new(boxlen_str),
-                Vec2::new(WINSIZE + 10.0, 90.0),
+                Vec2::new(WINSIZE + 10.0, 70.0),
             );
             let density_str = format!(
                 "Density: {:.2}",
@@ -697,25 +881,32 @@ impl event::EventHandler<ggez::GameError> for MainState {
             );
             canvas.draw(
                 &graphics::Text::new(density_str),
-                Vec2::new(WINSIZE + 10.0, 110.0),
+                Vec2::new(WINSIZE + 10.0, 90.0),
             );
-
-            // let target_fps = format!("Target FPS: {:.1}", self.fps);
-            // canvas.draw(
-            //     &graphics::Text::new(target_fps),
-            //     Vec2::new(WINSIZE + 10.0, 130.0),
-            // );
 
             let actual_fps = format!("FPS: {:.1}", ggez::timer::fps(ctx));
             canvas.draw(
                 &graphics::Text::new(actual_fps),
-                Vec2::new(WINSIZE + 10.0, 150.0),
+                Vec2::new(WINSIZE + 10.0, 130.0),
             );
             let normvel_str = format!("Norm vel: {:.3}", self.normvel);
             canvas.draw(
-                &graphics::Text::new(normvel_str),
-                Vec2::new(WINSIZE + 10.0, 190.0),
+                graphics::Text::new(normvel_str).set_scale(PxScale::from(30.0)),
+                Vec2::new(WINSIZE + 10.0, 200.0),
             );
+
+            let blindangle_str = format!("Blind angle: {:.2}", self.blindangle);
+            canvas.draw(
+                graphics::Text::new(blindangle_str).set_scale(PxScale::from(30.0)),
+                Vec2::new(WINSIZE + 10.0, 230.0),
+            );
+
+            let noise_str = format!("Noise: {:.1}", self.noise);
+            canvas.draw(
+                graphics::Text::new(noise_str).set_scale(PxScale::from(30.0)),
+                Vec2::new(WINSIZE + 10.0, 170.0),
+            );
+
             // Drawing surrounding box
             let rect = graphics::Rect::new(WINSIZE, 0.0, 3.0, WINSIZE);
             canvas.draw(
@@ -750,7 +941,8 @@ impl event::EventHandler<ggez::GameError> for MainState {
                     .color(Color::WHITE),
             );
             let elapsed = now.elapsed();
-            if self.time % 100 == 0 {
+            // if self.time % 100 == 0 {
+            if (self.time % 100 == 0) & (debugtime == 1) {
                 println!("Drawing: {:.2?}", elapsed);
             }
 
