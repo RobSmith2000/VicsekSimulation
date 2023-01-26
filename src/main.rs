@@ -16,6 +16,8 @@ use ggez::{
 use rand::Rng;
 use rayon::prelude::*;
 use std::collections::HashMap;
+use std::f64::consts::PI;
+use std::ops::Rem;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -71,11 +73,15 @@ fn boxNN(key: Vec<i32>, boxlen: f32) -> Vec<Vec<i32>> {
     return NNlist;
 }
 
+// change velandind to check for a vicsek flag if 1 vicsek if 0 milling
 fn velandind(
     hashmap: HashMap<Vec<i32>, Vec<usize>>,
     particlelist: &Vec<Vec<f32>>,
     boxlen: f32,
     noise: f32,
+    vicsekflag: u32,
+    blindangle: f32,
+    maxrotangle: f32,
 ) -> Vec<Vec<f32>> {
     let mut outputvec = Vec::new();
 
@@ -98,35 +104,128 @@ fn velandind(
             let mut currentparti = &particlelist[*activepartiindex];
             let mut currentpartix = currentparti[0];
             let mut currentpartiy = currentparti[1];
+            let mut currentpartia = currentparti[2];
 
             for otherindex in &indecies_to_check {
-                let mut otherparti = &particlelist[*otherindex];
-                let mut otherpartix = otherparti[0];
-                let mut otherpartiy = otherparti[1];
-                let mut otherpartiangle = otherparti[2];
+                // vicsek conditions
+                if vicsekflag == 1 {
+                    let mut otherparti = &particlelist[*otherindex];
+                    let mut otherpartix = otherparti[0];
+                    let mut otherpartiy = otherparti[1];
+                    let mut otherpartiangle = otherparti[2];
 
-                let mut dx = (currentpartix - otherpartix).abs();
-                let mut dy = (currentpartiy - otherpartiy).abs();
+                    let mut dx = (currentpartix - otherpartix).abs();
+                    let mut dy = (currentpartiy - otherpartiy).abs();
 
-                if dx > boxlen / 2.0 {
-                    dx = boxlen - dx;
-                }
-                if dy > boxlen / 2.0 {
-                    dy = boxlen - dy;
-                }
+                    if dx > boxlen / 2.0 {
+                        dx = boxlen - dx;
+                    }
+                    if dy > boxlen / 2.0 {
+                        dy = boxlen - dy;
+                    }
 
-                let dist = (dx * dx + dy * dy);
+                    let dist = (dx * dx + dy * dy);
 
-                if dist < 1.0 {
-                    // println!("particle within radius for parti {:?}", otherindex);
-                    sum_of_sin += otherpartiangle.sin();
-                    sum_of_cos += otherpartiangle.cos();
-                    // println!("sin  {:?}, cos {:?}", sum_of_sin, sum_of_cos);
+                    if dist < 1.0 {
+                        // println!("particle within radius for parti {:?}", otherindex);
+                        sum_of_sin += otherpartiangle.sin();
+                        sum_of_cos += otherpartiangle.cos();
+                        // println!("sin  {:?}, cos {:?}", sum_of_sin, sum_of_cos);
+                    }
+                    // milling conditions
+                } else {
+                    let mut otherparti = &particlelist[*otherindex];
+                    let mut otherpartix = otherparti[0];
+                    let mut otherpartiy = otherparti[1];
+                    let mut otherpartiangle = otherparti[2];
+
+                    let velx = currentpartia.sin();
+                    let vely = currentpartia.cos();
+                    let mut distx = otherpartix - currentpartix;
+                    let mut disty = otherpartiy - currentpartiy;
+
+                    // 3x3 box correction with periodic boundry conditions
+                    if (distx).abs() > 2.0 {
+                        if otherpartix > currentpartix {
+                            distx -= boxlen;
+                        } else {
+                            distx += boxlen;
+                        }
+                    }
+                    if (disty).abs() > 2.0 {
+                        if otherpartiy > currentpartiy {
+                            disty -= boxlen;
+                        } else {
+                            disty += boxlen;
+                        }
+                    }
+                    let distsquared = (distx * distx) + (disty * disty);
+                    if distsquared == 0. {
+                        sum_of_sin += otherpartiangle.sin();
+                        sum_of_cos += otherpartiangle.cos();
+                    }
+                    // conditions to check if within radius
+                    else if distsquared < 1.0 {
+                        let dotprod = ((distx * velx) + (disty * vely)) / (distsquared).sqrt();
+                        let diffanglerad = dotprod.acos();
+                        // conditions to check if within viewing angle
+                        if diffanglerad < (180. - blindangle / 2.0) * (3.14 / 180.) {
+                            sum_of_sin += otherpartiangle.sin();
+                            sum_of_cos += otherpartiangle.cos();
+                            // println!("interactoin");
+                        }
+                    }
                 }
             }
             // update the newlist with the calculated velocity this might break at somepoint
-            let arctan = f32::atan2((sum_of_sin), sum_of_cos);
-            // let randangle = rng.gen_range((-noise / 2.0)..(noise / 2.0)) as f32;
+            let mut arctan = f32::atan2((sum_of_sin), sum_of_cos);
+            let maxangle = maxrotangle * (3.14 / 180.);
+            // println!("{:?}", maxangle);
+
+            if vicsekflag == 0 {
+                let mut avangle = arctan.rem_euclid(2. * std::f32::consts::PI);
+                let mut curangle = currentpartia.rem_euclid(2. * std::f32::consts::PI);
+                // println!(
+                //     "avangle {:?}, curangle {:?}, arctan {:?}, currentangle {:?}",
+                //     avangle, curangle, arctan, currentpartia
+                // );
+                if avangle > curangle {
+                    let case1 = avangle - curangle;
+                    let case2 = (2. * std::f32::consts::PI) + curangle - avangle;
+                    if case1 < case2 {
+                        if case1 > maxangle {
+                            avangle = curangle + maxangle;
+                            // println!("avangle>curangle, case1<case2, angle {:?},max angle {:?}, newcurangle {:?}",case1, maxangle,curangle)
+                        }
+                    }
+                    if case2 < case1 {
+                        if case2 > maxangle {
+                            avangle = (curangle - maxangle).rem_euclid(2. * std::f32::consts::PI);
+                            // println!("avangle>curangle, case2<case1, angle {:?},max angle {:?}, newcurangle {:?}",case2, maxangle,curangle)
+                        }
+                    }
+                }
+                if curangle > avangle {
+                    let case1 = curangle - avangle;
+                    let case2 = (2. * std::f32::consts::PI) + avangle - curangle;
+                    if case1 < case2 {
+                        if case1 > maxangle {
+                            avangle = curangle + maxangle;
+                            // println!("curangle>avangle, case1<case2, angle {:?},max angle {:?}, newcurangle {:?}",case1, maxangle,curangle)
+                        }
+                    }
+                    if case2 < case1 {
+                        if case2 > maxangle {
+                            avangle = (curangle + maxangle).rem_euclid(2. * std::f32::consts::PI);
+                            // println!("curangle>avangle, case2<case1, angle {:?},max angle {:?}, newcurangle {:?}",case2, maxangle,curangle)
+                        }
+                    }
+                }
+                // println!("{:?}", arctan);
+                arctan = avangle;
+                // println!("{:?}", arctan);
+            }
+
             let mut randangle = 0.0;
             if noise > 0.0 {
                 randangle += rng.gen_range((-noise / 2.0)..(noise / 2.0)) as f32;
@@ -197,6 +296,8 @@ struct MainState {
     visualiseflag: u32,
     updateflag: u32,
     colorflag: u32,
+    vicsekflag: u32,
+    maxrotangle: f32,
 }
 
 impl MainState {
@@ -218,7 +319,7 @@ impl MainState {
             graphics::DrawMode::fill(),
             vec2(0., 0.),
             WINSIZE / boxlen,
-            2.0,
+            1.0,
             Color::RED,
         )?;
         // generate random list of particles
@@ -241,6 +342,8 @@ impl MainState {
             updateflag: 0,
             visualiseflag: 1,
             colorflag: 0,
+            vicsekflag: 1,
+            maxrotangle: 90.,
         })
     }
 }
@@ -384,6 +487,12 @@ impl event::EventHandler<ggez::GameError> for MainState {
             if k_ctx.is_key_pressed(KeyCode::H) {
                 self.colorflag = 0;
             };
+            if k_ctx.is_key_pressed(KeyCode::J) {
+                self.vicsekflag = 0;
+            };
+            if k_ctx.is_key_pressed(KeyCode::K) {
+                self.vicsekflag = 1;
+            };
             if k_ctx.is_key_pressed(KeyCode::E) {
                 let len = self.partilist.len();
                 for _ in 0..len {
@@ -458,12 +567,32 @@ impl event::EventHandler<ggez::GameError> for MainState {
                 }
             }
 
+            // if k_ctx.is_key_pressed(KeyCode::Z) {
+            //     self.fps += 1;
+            // }
+
+            // if k_ctx.is_key_pressed(KeyCode::X) {
+            //     self.fps -= 1;
+            // }
+
             if k_ctx.is_key_pressed(KeyCode::Z) {
-                self.fps += 1;
+                self.maxrotangle += 1.;
+                if k_ctx.is_mod_active(ggez::input::keyboard::KeyMods::SHIFT) {
+                    self.maxrotangle += 10.
+                }
+                if self.maxrotangle > 180.0 {
+                    self.maxrotangle = 180.0
+                }
             }
 
             if k_ctx.is_key_pressed(KeyCode::X) {
-                self.fps -= 1;
+                self.maxrotangle -= 1.;
+                if k_ctx.is_mod_active(ggez::input::keyboard::KeyMods::SHIFT) {
+                    self.maxrotangle -= 10.
+                }
+                if self.maxrotangle < 0.0 {
+                    self.maxrotangle = 0.0
+                }
             }
 
             // calculate Normalised Velocity
@@ -501,57 +630,6 @@ impl event::EventHandler<ggez::GameError> for MainState {
             // if (self.time % 100 == 0) & (debugtime == 1) {
             //     println!("position update: {:.2?}", elapsed);
             // }
-            if (self.time % 100 == 0) {
-                let partix = self.partilist[0][0];
-                let partiy = self.partilist[0][1];
-                let partia = self.partilist[0][2];
-
-                let parti2x = self.partilist[1][0];
-                let parti2y = self.partilist[1][1];
-
-                let ax = partia.sin();
-                let ay = partia.cos();
-                let mut bx = parti2x - partix;
-                let mut by = parti2y - partiy;
-
-                //     // 3x3 box correction with periodic boundry conditions
-                //     // if (bx).abs() > 2.0 {
-                //     //     println!("overflow in x");
-                //     //     if parti2x > partix {
-                //     //         bx -= self.boxlen;
-                //     //     } else {
-                //     //         bx += self.boxlen;
-                //     //     }
-                // }
-                // if (by).abs() > 2.0 {
-                //     // println!("overflow in y ");
-                //     if parti2y > partiy {
-                //         by -= self.boxlen;
-                //     } else {
-                //         by += self.boxlen;
-                //     }
-                // }
-
-                let dot = ((ax * bx) + (ay * by)) / ((bx * bx) + (by * by)).sqrt();
-
-                println!("diff angle: {:.2?}", dot.acos() * (180. / 3.14));
-
-                if dot.acos() < (self.blindangle / 2.0) * (3.14 / 180.) {
-                    println!("red parti can see white parti");
-                }
-
-                //     // now need to create a blind angle checker u
-                //     // println!(
-                //     //     "viewing angle range : {:.2?}, {:.2}",
-                //     //     (angle - seeingangle / 2.0) * (180. / 3.14),
-                //     //     (angle + seeingangle / 2.0) * (180. / 3.14),
-                //     // );
-                //     // println!(
-                //     //     "atan2: {:.2?}",
-                //     //     (f32::atan2(self.partilist[0][1] - center, self.partilist[0][0] - center)
-                //     //         * (180. / 3.14))
-                //     // );
-            }
 
             /// creating hash mapping
             let now = Instant::now();
@@ -572,70 +650,6 @@ impl event::EventHandler<ggez::GameError> for MainState {
             if (self.time % 100 == 0) & (debugtime == 1) {
                 println!("hashmap update: {:.2?}", elapsed);
             }
-            // all code to go between this
-
-            //Update velocity step
-            //Go though each box and update velocity
-            // creating a new list to update the velocities
-
-            // let mut newlist: Vec<Vec<f32>> = self.partilist.clone();
-            // for (key, val) in boxhashmap.iter() {
-            //     //get parti index from surrounding boxes
-            //     let mut indecies_to_check: Vec<usize> = Vec::new();
-            //     for checkingbox in &mut boxNN(key.to_vec(), self.boxlen).into_iter() {
-            //         if boxhashmap.contains_key(&checkingbox) {
-            //             indecies_to_check.extend(boxhashmap.get(&checkingbox).unwrap());
-            //         }
-            //     }
-
-            //     // update the velocity of each particle the box
-            //     for activepartiindex in val {
-            //         let mut sum_of_sin: f32 = 0.0;
-            //         let mut sum_of_cos: f32 = 0.0;
-            //         let mut rng = rand::thread_rng();
-
-            //         let mut currentparti = &self.partilist[*activepartiindex];
-            //         let mut currentpartix = currentparti[0];
-            //         let mut currentpartiy = currentparti[1];
-
-            //         for otherindex in &indecies_to_check {
-            //             let mut otherparti = &self.partilist[*otherindex];
-            //             let mut otherpartix = otherparti[0];
-            //             let mut otherpartiy = otherparti[1];
-            //             let mut otherpartiangle = otherparti[2];
-
-            //             let mut dx = (currentpartix - otherpartix).abs();
-            //             let mut dy = (currentpartiy - otherpartiy).abs();
-
-            //             if dx > self.boxlen / 2.0 {
-            //                 dx = self.boxlen - dx;
-            //             }
-            //             if dy > self.boxlen / 2.0 {
-            //                 dy = self.boxlen - dy;
-            //             }
-
-            //             let dist = (dx * dx + dy * dy);
-
-            //             if dist < 1.0 {
-            //                 sum_of_sin += otherpartiangle.sin();
-            //                 sum_of_cos += otherpartiangle.cos();
-            //             }
-            //         }
-            //         // update the newlist with the calculated velocity this might break at somepoint
-            //         let arctan = f32::atan2((sum_of_sin), sum_of_cos);
-            //         let mut randangle = 0.0;
-            //         if self.noise > 0.0 {
-            //             randangle += rng.gen_range((-self.noise / 2.0)..(self.noise / 2.0)) as f32;
-            //         }
-            //         let mut updatedangle = arctan + randangle;
-            //         newlist[*activepartiindex][2] = updatedangle;
-            //     }
-            // }
-
-            // // updating parti_list from the new list
-            // self.partilist = newlist.clone();
-            // // all new code is to go above here
-            // all new code to go under this
 
             let now = Instant::now();
             let cpu_count = 8;
@@ -651,7 +665,17 @@ impl event::EventHandler<ggez::GameError> for MainState {
 
             let parallellist: Vec<Vec<Vec<f32>>> = chunks
                 .par_iter()
-                .map(|chunk| velandind(chunk.clone(), &self.partilist, self.boxlen, self.noise))
+                .map(|chunk| {
+                    velandind(
+                        chunk.clone(),
+                        &self.partilist,
+                        self.boxlen,
+                        self.noise,
+                        self.vicsekflag,
+                        self.blindangle,
+                        self.maxrotangle,
+                    )
+                })
                 .collect();
 
             let flattenlist = parallellist.into_iter().flatten().collect::<Vec<_>>();
@@ -814,42 +838,47 @@ impl event::EventHandler<ggez::GameError> for MainState {
                             (self.boxlen - self.partilist[0][1]) * (WINSIZE / self.boxlen),
                         ),
                     );
+                    if self.vicsekflag == 0 {
+                        // building a function that gives blind angle arc
+                        fn semicircle(angle: f32, boxlen: f32) -> [Point2<f32>; 361] {
+                            let mut points = [Point2::from([0.0, 0.0]); 361];
 
-                    // building a function that gives blind angle arc
-                    fn semicircle(angle: f32, boxlen: f32) -> [Point2<f32>; 361] {
-                        let mut points = [Point2::from([0.0, 0.0]); 361];
-
-                        for i in 0..360 {
-                            points[i] = Point2::from([
-                                0.0 + (((360. - angle) / 360.) * (3.14 / 180.) * (i as f32) as f32)
-                                    .sin()
-                                    * WINSIZE
-                                    / (boxlen * 2.1),
-                                0.0 + (((360. - angle) / 360.) * (3.14 / 180.) * (i as f32) as f32)
-                                    .cos()
-                                    * WINSIZE
-                                    / (boxlen * 2.1),
-                            ])
+                            for i in 0..360 {
+                                points[i] = Point2::from([
+                                    0.0 + (((360. - angle) / 360.)
+                                        * (3.14 / 180.)
+                                        * (i as f32) as f32)
+                                        .sin()
+                                        * WINSIZE
+                                        / (boxlen * 2.1),
+                                    0.0 + (((360. - angle) / 360.)
+                                        * (3.14 / 180.)
+                                        * (i as f32) as f32)
+                                        .cos()
+                                        * WINSIZE
+                                        / (boxlen * 2.1),
+                                ])
+                            }
+                            return points;
                         }
-                        return points;
+
+                        let blindarc = graphics::Mesh::new_polygon(
+                            ctx,
+                            graphics::DrawMode::fill(),
+                            &semicircle(self.blindangle, self.boxlen),
+                            Color::GREEN,
+                        )?;
+
+                        canvas.draw(
+                            &blindarc,
+                            DrawParam::new()
+                                .dest(vec2(
+                                    self.partilist[0][0] * (WINSIZE / self.boxlen),
+                                    (self.boxlen - self.partilist[0][1]) * (WINSIZE / self.boxlen),
+                                ))
+                                .rotation(self.partilist[0][2] - self.blindangle * (3.14 / 360.)),
+                        );
                     }
-
-                    let blindarc = graphics::Mesh::new_polygon(
-                        ctx,
-                        graphics::DrawMode::fill(),
-                        &semicircle(self.blindangle, self.boxlen),
-                        Color::GREEN,
-                    )?;
-
-                    canvas.draw(
-                        &blindarc,
-                        DrawParam::new()
-                            .dest(vec2(
-                                self.partilist[0][0] * (WINSIZE / self.boxlen),
-                                (self.boxlen - self.partilist[0][1]) * (WINSIZE / self.boxlen),
-                            ))
-                            .rotation(self.partilist[0][2] - self.blindangle * (3.14 / 360.)),
-                    );
                 }
             }
 
@@ -895,10 +924,24 @@ impl event::EventHandler<ggez::GameError> for MainState {
                 Vec2::new(WINSIZE + 10.0, 200.0),
             );
 
-            let blindangle_str = format!("Blind angle: {:.2}", self.blindangle);
+            if self.vicsekflag == 0 {
+                let blindangle_str = format!("Blind angle: {:.2}", self.blindangle);
+                canvas.draw(
+                    graphics::Text::new(blindangle_str).set_scale(PxScale::from(30.0)),
+                    Vec2::new(WINSIZE + 10.0, 550.0),
+                );
+
+                let maxrot_str = format!("maxrot: {:.2}", self.maxrotangle);
+                canvas.draw(
+                    graphics::Text::new(maxrot_str).set_scale(PxScale::from(30.0)),
+                    Vec2::new(WINSIZE + 10.0, 580.0),
+                );
+            }
+
+            let vicsekflag_str = format!("vicsek model: {:.1}", self.vicsekflag);
             canvas.draw(
-                graphics::Text::new(blindangle_str).set_scale(PxScale::from(30.0)),
-                Vec2::new(WINSIZE + 10.0, 230.0),
+                graphics::Text::new(vicsekflag_str).set_scale(PxScale::from(30.0)),
+                Vec2::new(WINSIZE + 10.0, 530.0),
             );
 
             let noise_str = format!("Noise: {:.1}", self.noise);
