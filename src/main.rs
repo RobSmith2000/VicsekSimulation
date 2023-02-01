@@ -1,122 +1,122 @@
-//! The simplest possible example that does something.
+// To run at build speed
 // cargo run --release -- -C target=cpu_native
-#![allow(clippy::unnecessary_wraps)]
-// test
-use ggez::graphics::{DrawMode, DrawParam, Image, Mesh, MeshBuilder, PxScale};
-use ggez::input::keyboard::{KeyCode, KeyInput, KeyMods};
-use ggez::mint::Point2;
-use ggez::timer::{self, TimeContext};
-use ggez::winit::platform::unix::x11::ffi::WindingRule;
+
+//// Imports
 use ggez::{
     event,
     glam::*,
-    graphics::{self, Color},
+    graphics::{self, Color, DrawMode, DrawParam, Mesh, MeshBuilder, PxScale},
+    input::keyboard::KeyCode,
+    mint::Point2,
     Context, GameResult,
 };
-use rand::Rng;
+use rand::{rngs::ThreadRng, Rng};
 use rayon::prelude::*;
-use std::collections::HashMap;
-use std::f64::consts::PI;
-use std::ops::Rem;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::{cmp::Ordering, collections::HashMap, time::Instant};
 
-fn randparti(boxlen: f32) -> Vec<f32> {
-    let mut rng = rand::thread_rng();
-    let pos = vec![
+//// Functions
+fn randpartigen(boxlen: f32) -> Vec<f32> {
+    // Generate a random position and bearning inside the box
+    let mut rng: ThreadRng = rand::thread_rng();
+    let coords: Vec<f32> = vec![
         rng.gen_range((0.0)..(boxlen)) as f32,
         rng.gen_range((0.0)..(boxlen)) as f32,
-        rng.gen_range((0.0)..(6.27)) as f32,
+        rng.gen_range((0.0)..(2. * std::f32::consts::PI)) as f32,
     ];
-    return pos;
+    return coords;
 }
-fn boxNN(key: Vec<i32>, boxlen: f32) -> Vec<Vec<i32>> {
+
+fn box_nn(boxcoord: Vec<i32>, boxlen: f32) -> Vec<Vec<i32>> {
+    // Gives surrounding 3x3 grid given the current box including periodic boundry conditions
     // box is labeled as [x,y]
-    let boxnum = (boxlen) as i32;
-    let x = key[0];
-    let y = key[1];
-    let NNlist = vec![
+    let boxlen: i32 = (boxlen) as i32;
+    let x: i32 = boxcoord[0];
+    let y: i32 = boxcoord[1];
+    let nnlist: Vec<Vec<i32>> = vec![
         vec![
-            (x - 1 as i32).rem_euclid(boxnum),
-            (y - 1 as i32).rem_euclid(boxnum),
+            (x - 1 as i32).rem_euclid(boxlen),
+            (y - 1 as i32).rem_euclid(boxlen),
         ],
         vec![
-            (x as i32).rem_euclid(boxnum),
-            (y - 1 as i32).rem_euclid(boxnum),
+            (x as i32).rem_euclid(boxlen),
+            (y - 1 as i32).rem_euclid(boxlen),
         ],
         vec![
-            (x + 1 as i32).rem_euclid(boxnum),
-            (y - 1 as i32).rem_euclid(boxnum),
+            (x + 1 as i32).rem_euclid(boxlen),
+            (y - 1 as i32).rem_euclid(boxlen),
         ],
         vec![
-            (x - 1 as i32).rem_euclid(boxnum),
-            (y as i32).rem_euclid(boxnum),
+            (x - 1 as i32).rem_euclid(boxlen),
+            (y as i32).rem_euclid(boxlen),
         ],
-        vec![(x as i32).rem_euclid(boxnum), (y as i32).rem_euclid(boxnum)],
+        vec![(x as i32).rem_euclid(boxlen), (y as i32).rem_euclid(boxlen)],
         vec![
-            (x + 1 as i32).rem_euclid(boxnum),
-            (y as i32).rem_euclid(boxnum),
-        ],
-        vec![
-            (x - 1 as i32).rem_euclid(boxnum),
-            (y + 1 as i32).rem_euclid(boxnum),
+            (x + 1 as i32).rem_euclid(boxlen),
+            (y as i32).rem_euclid(boxlen),
         ],
         vec![
-            (x as i32).rem_euclid(boxnum),
-            (y + 1 as i32).rem_euclid(boxnum),
+            (x - 1 as i32).rem_euclid(boxlen),
+            (y + 1 as i32).rem_euclid(boxlen),
         ],
         vec![
-            (x + 1 as i32).rem_euclid(boxnum),
-            (y + 1 as i32).rem_euclid(boxnum),
+            (x as i32).rem_euclid(boxlen),
+            (y + 1 as i32).rem_euclid(boxlen),
+        ],
+        vec![
+            (x + 1 as i32).rem_euclid(boxlen),
+            (y + 1 as i32).rem_euclid(boxlen),
         ],
     ];
-    return NNlist;
+    return nnlist;
 }
 
-// change velandind to check for a vicsek flag if 1 vicsek if 0 milling
-fn velandind(
-    hashmap: HashMap<Vec<i32>, Vec<usize>>,
+fn new_angle_for_index_array(
+    // The angle update to be parallalised if vicsek flag == 1 perform standard vicsek if nnflag == 1 consider nearest neighbours
+    partialhashmap: HashMap<Vec<i32>, Vec<usize>>,
     particlelist: &Vec<Vec<f32>>,
     boxlen: f32,
     noise: f32,
     vicsekflag: u32,
     blindangle: f32,
     maxrotangle: f32,
+    nninteractionnum: u32,
+    nnflag: u32,
 ) -> Vec<Vec<f32>> {
-    let mut outputvec = Vec::new();
-
-    for (key, val) in hashmap.iter() {
-        let mut keynoisevec: Vec<f32> = Vec::new();
-        //get parti index from surrounding boxes
+    let mut new_angle_for_index_array: Vec<Vec<f32>> = Vec::new();
+    // Go though each boxcoord given and append angles and indicies to the output array
+    for (currentboxcoord, currentboxcoordpartiindicies) in partialhashmap.iter() {
+        // Get parti indicies from surrounding boxes
         let mut indecies_to_check: Vec<usize> = Vec::new();
-        for checkingbox in &mut boxNN(key.to_vec(), boxlen).into_iter() {
-            if hashmap.contains_key(&checkingbox) {
-                indecies_to_check.extend(hashmap.get(&checkingbox).unwrap());
+        for checkingbox in &mut box_nn(currentboxcoord.to_vec(), boxlen).into_iter() {
+            if partialhashmap.contains_key(&checkingbox) {
+                indecies_to_check.extend(partialhashmap.get(&checkingbox).unwrap());
             }
         }
-
-        for activepartiindex in val {
+        // Update angle for every particle for current box
+        for activepartiindex in currentboxcoordpartiindicies {
             let mut sum_of_sin: f32 = 0.0;
             let mut sum_of_cos: f32 = 0.0;
-            // let mut count = 0;
             let mut rng = rand::thread_rng();
 
-            let mut currentparti = &particlelist[*activepartiindex];
-            let mut currentpartix = currentparti[0];
-            let mut currentpartiy = currentparti[1];
-            let mut currentpartia = currentparti[2];
+            let currentparti = &particlelist[*activepartiindex];
+            let currentpartix = currentparti[0];
+            let currentpartiy = currentparti[1];
+            let currentpartia = currentparti[2];
 
+            // If nn is on this will collect all particles within conditions
+            let mut parti_nnlist: Vec<Vec<f32>> = Vec::new();
             for otherindex in &indecies_to_check {
                 // vicsek conditions
                 if vicsekflag == 1 {
-                    let mut otherparti = &particlelist[*otherindex];
-                    let mut otherpartix = otherparti[0];
-                    let mut otherpartiy = otherparti[1];
-                    let mut otherpartiangle = otherparti[2];
+                    let otherparti = &particlelist[*otherindex];
+                    let otherpartix = otherparti[0];
+                    let otherpartiy = otherparti[1];
+                    let otherpartia = otherparti[2];
 
                     let mut dx = (currentpartix - otherpartix).abs();
                     let mut dy = (currentpartiy - otherpartiy).abs();
 
+                    // Adjusting distance for periodic boundry conditions
                     if dx > boxlen / 2.0 {
                         dx = boxlen - dx;
                     }
@@ -124,27 +124,30 @@ fn velandind(
                         dy = boxlen - dy;
                     }
 
-                    let dist = (dx * dx + dy * dy);
+                    let distsquared = dx * dx + dy * dy;
 
-                    if dist < 1.0 {
-                        // println!("particle within radius for parti {:?}", otherindex);
-                        sum_of_sin += otherpartiangle.sin();
-                        sum_of_cos += otherpartiangle.cos();
-                        // println!("sin  {:?}, cos {:?}", sum_of_sin, sum_of_cos);
+                    if distsquared < 1.0 {
+                        if nnflag == 1 {
+                            parti_nnlist.push(vec![distsquared, otherpartia]);
+                        } else {
+                            sum_of_sin += otherpartia.sin();
+                            sum_of_cos += otherpartia.cos();
+                        }
                     }
+
                     // milling conditions
                 } else {
-                    let mut otherparti = &particlelist[*otherindex];
-                    let mut otherpartix = otherparti[0];
-                    let mut otherpartiy = otherparti[1];
-                    let mut otherpartiangle = otherparti[2];
+                    let otherparti = &particlelist[*otherindex];
+                    let otherpartix = otherparti[0];
+                    let otherpartiy = otherparti[1];
+                    let otherpartia = otherparti[2];
 
                     let velx = currentpartia.sin();
                     let vely = currentpartia.cos();
                     let mut distx = otherpartix - currentpartix;
                     let mut disty = otherpartiy - currentpartiy;
 
-                    // 3x3 box correction with periodic boundry conditions
+                    // 3x3 box coord correction with periodic boundry conditions
                     if (distx).abs() > 2.0 {
                         if otherpartix > currentpartix {
                             distx -= boxlen;
@@ -160,48 +163,74 @@ fn velandind(
                         }
                     }
                     let distsquared = (distx * distx) + (disty * disty);
+                    // This condition is required so that the arctan is well defined
                     if distsquared == 0. {
-                        sum_of_sin += otherpartiangle.sin();
-                        sum_of_cos += otherpartiangle.cos();
+                        if nnflag == 1 {
+                            parti_nnlist.push(vec![distsquared, otherpartia]);
+                        } else {
+                            sum_of_sin += otherpartia.sin();
+                            sum_of_cos += otherpartia.cos();
+                        }
                     }
-                    // conditions to check if within radius
+                    // Condition to check if within radius
                     else if distsquared < 1.0 {
+                        // Using dotproduct to calculate difference in angle
                         let dotprod = ((distx * velx) + (disty * vely)) / (distsquared).sqrt();
                         let diffanglerad = dotprod.acos();
-                        // conditions to check if within viewing angle
+                        // Conditions to check if within viewing angle
                         if diffanglerad < (180. - blindangle / 2.0) * (3.14 / 180.) {
-                            sum_of_sin += otherpartiangle.sin();
-                            sum_of_cos += otherpartiangle.cos();
-                            // println!("interactoin");
+                            if nnflag == 1 {
+                                parti_nnlist.push(vec![distsquared, otherpartia]);
+                            } else {
+                                sum_of_sin += otherpartia.sin();
+                                sum_of_cos += otherpartia.cos();
+                            }
                         }
                     }
                 }
             }
-            // update the newlist with the calculated velocity this might break at somepoint
-            let mut arctan = f32::atan2((sum_of_sin), sum_of_cos);
-            let maxangle = maxrotangle * (3.14 / 180.);
-            // println!("{:?}", maxangle);
 
+            // Use nn list to only add nearest n particles
+            if nnflag == 1 {
+                // Sorting nnlist so that neasest parti is closest
+                parti_nnlist.sort_by(|a, b| a[0].partial_cmp(&b[0]).unwrap_or(Ordering::Equal));
+
+                // Adding the angles of the nearest n particles
+                for i in 0..(nninteractionnum as usize + 1) {
+                    // Fixing crashes
+                    if parti_nnlist.len() == 0 {
+                        break;
+                    }
+                    // Only call the nearest neighbor if the index exists
+                    if i > parti_nnlist.len() - 1 {
+                        break;
+                    };
+                    sum_of_sin += parti_nnlist[i][1].sin();
+                    sum_of_cos += parti_nnlist[i][1].cos();
+                }
+            }
+
+            // Create a new angle from the interaction
+            let mut arctan = f32::atan2(sum_of_sin, sum_of_cos);
+            let maxangle = maxrotangle * (3.14 / 180.);
+
+            // We modify the arctan so it cant be larger than the max angle
             if vicsekflag == 0 {
                 let mut avangle = arctan.rem_euclid(2. * std::f32::consts::PI);
-                let mut curangle = currentpartia.rem_euclid(2. * std::f32::consts::PI);
-                // println!(
-                //     "avangle {:?}, curangle {:?}, arctan {:?}, currentangle {:?}",
-                //     avangle, curangle, arctan, currentpartia
-                // );
+                let curangle = currentpartia.rem_euclid(2. * std::f32::consts::PI);
+
+                // Logic to get the correct modular arithmatic of angles
                 if avangle > curangle {
                     let case1 = avangle - curangle;
                     let case2 = (2. * std::f32::consts::PI) + curangle - avangle;
                     if case1 < case2 {
                         if case1 > maxangle {
                             avangle = curangle + maxangle;
-                            // println!("avangle>curangle, case1<case2, angle {:?},max angle {:?}, newcurangle {:?}",case1, maxangle,curangle)
                         }
                     }
                     if case2 < case1 {
                         if case2 > maxangle {
                             avangle = (curangle - maxangle).rem_euclid(2. * std::f32::consts::PI);
-                            // println!("avangle>curangle, case2<case1, angle {:?},max angle {:?}, newcurangle {:?}",case2, maxangle,curangle)
                         }
                     }
                 }
@@ -210,20 +239,17 @@ fn velandind(
                     let case2 = (2. * std::f32::consts::PI) + avangle - curangle;
                     if case1 < case2 {
                         if case1 > maxangle {
-                            avangle = curangle + maxangle;
-                            // println!("curangle>avangle, case1<case2, angle {:?},max angle {:?}, newcurangle {:?}",case1, maxangle,curangle)
+                            avangle = curangle - maxangle;
                         }
                     }
                     if case2 < case1 {
                         if case2 > maxangle {
                             avangle = (curangle + maxangle).rem_euclid(2. * std::f32::consts::PI);
-                            // println!("curangle>avangle, case2<case1, angle {:?},max angle {:?}, newcurangle {:?}",case2, maxangle,curangle)
                         }
                     }
                 }
-                // println!("{:?}", arctan);
+                // Updating the arctan to the limited angle
                 arctan = avangle;
-                // println!("{:?}", arctan);
             }
 
             let mut randangle = 0.0;
@@ -234,10 +260,10 @@ fn velandind(
             // println!("update angle{:?}", updatedangle * (180. / 3.14));
             // newlist[*activepartiindex][2] = updatedangle;
             let mut newpair = vec![*activepartiindex as f32, updatedangle];
-            outputvec.push(newpair)
+            new_angle_for_index_array.push(newpair)
         }
     }
-    return outputvec;
+    return new_angle_for_index_array;
 }
 
 fn convert_hsv_to_rgb(pixel: &Vec<f32>) -> [f32; 3] {
@@ -298,6 +324,9 @@ struct MainState {
     colorflag: u32,
     vicsekflag: u32,
     maxrotangle: f32,
+    colorwheel: graphics::Image,
+    NNinteraction: u32,
+    NNflag: u32,
 }
 
 impl MainState {
@@ -311,9 +340,11 @@ impl MainState {
             Color::WHITE,
         )?;
 
-        let mut partinum = 2;
+        let mut partinum = 100;
+        // let boxlen: f32 = 800.0;
         let boxlen: f32 = 20.0;
 
+        let wheel = graphics::Image::from_path(ctx, "/pngwing.com.png")?;
         let intrad = graphics::Mesh::new_circle(
             ctx,
             graphics::DrawMode::fill(),
@@ -325,15 +356,16 @@ impl MainState {
         // generate random list of particles
         let mut parti_list = Vec::new();
         for _ in 0..partinum {
-            parti_list.push(randparti(boxlen));
+            parti_list.push(randpartigen(boxlen));
         }
 
         Ok(MainState {
             circle,
             intrad,
             time: 0,
-            noise: 0.3,
+            noise: 0.4,
             speed: 0.03,
+            // speed: 0.5,
             blindangle: 30.,
             partilist: parti_list,
             boxlen: boxlen,
@@ -344,6 +376,9 @@ impl MainState {
             colorflag: 0,
             vicsekflag: 1,
             maxrotangle: 90.,
+            colorwheel: wheel,
+            NNinteraction: 1,
+            NNflag: 0,
         })
     }
 }
@@ -493,6 +528,12 @@ impl event::EventHandler<ggez::GameError> for MainState {
             if k_ctx.is_key_pressed(KeyCode::K) {
                 self.vicsekflag = 1;
             };
+            if k_ctx.is_key_pressed(KeyCode::L) {
+                self.NNflag = 1;
+            };
+            if k_ctx.is_key_pressed(KeyCode::C) {
+                self.NNflag = 0;
+            };
             if k_ctx.is_key_pressed(KeyCode::E) {
                 let len = self.partilist.len();
                 for _ in 0..len {
@@ -513,6 +554,17 @@ impl event::EventHandler<ggez::GameError> for MainState {
                 for _ in 0..self.partilist.len() {
                     self.partilist.pop();
                 }
+            }
+
+            if k_ctx.is_key_pressed(KeyCode::N) {
+                // for _ in 0..self.partilist.len() {
+                self.NNinteraction += 1
+                // }
+            }
+            if k_ctx.is_key_pressed(KeyCode::M) {
+                // for _ in 0..self.partilist.len() {
+                self.NNinteraction -= 1
+                // }
             }
 
             if k_ctx.is_key_pressed(KeyCode::A) {
@@ -666,7 +718,7 @@ impl event::EventHandler<ggez::GameError> for MainState {
             let parallellist: Vec<Vec<Vec<f32>>> = chunks
                 .par_iter()
                 .map(|chunk| {
-                    velandind(
+                    new_angle_for_index_array(
                         chunk.clone(),
                         &self.partilist,
                         self.boxlen,
@@ -674,6 +726,8 @@ impl event::EventHandler<ggez::GameError> for MainState {
                         self.vicsekflag,
                         self.blindangle,
                         self.maxrotangle,
+                        self.NNinteraction,
+                        self.NNflag,
                     )
                 })
                 .collect();
@@ -701,18 +755,6 @@ impl event::EventHandler<ggez::GameError> for MainState {
             let mut canvas =
                 graphics::Canvas::from_frame(ctx, graphics::Color::from([0.1, 0.2, 0.3, 1.0]));
 
-            // println!("{:?}", timer::check_update_time(ctx, self.fps));
-            // Draw each particle and push to window
-            // for particle in 0..(self.partilist.len()) {
-            //     canvas.draw(
-            //         &self.circle,
-            //         Vec2::new(
-            //             self.partilist[particle][0] * (WINSIZE / self.boxlen),
-            //             (self.boxlen - self.partilist[particle][1]) * (WINSIZE / self.boxlen),
-            //         ),
-            //     );
-            // }
-
             // create mesh of particles and draw to screen
 
             // while timer::check_update_time(ctx, self.fps) {
@@ -720,6 +762,7 @@ impl event::EventHandler<ggez::GameError> for MainState {
             if self.visualiseflag == 1 {
                 if self.partilist.len() > 0 {
                     let mut mesh_builder = MeshBuilder::new();
+
                     for particle in self.partilist.iter() {
                         let mut particolor = Color::WHITE;
                         if self.colorflag == 1 {
@@ -739,19 +782,7 @@ impl event::EventHandler<ggez::GameError> for MainState {
                             2.0,
                             10.0,
                             particolor, // Color::new(r, g, b, 1.0),
-                        );
-                    }
-
-                    for particle in self.partilist.iter() {
-                        let mut particolor = Color::WHITE;
-                        if self.colorflag == 1 {
-                            let [r, g, b] = convert_hsv_to_rgb(&vec![
-                                particle[2].rem_euclid(2. * 3.14) * (180. / 3.14),
-                                100.0,
-                                100.0,
-                            ]);
-                            particolor = Color::new(r, g, b, 1.0);
-                        };
+                        )?;
 
                         mesh_builder.line(
                             &[
@@ -767,20 +798,19 @@ impl event::EventHandler<ggez::GameError> for MainState {
                             ],
                             1.0,
                             particolor,
-                        );
+                        )?;
                     }
 
+                    // drawing color wheel
                     if self.colorflag == 1 {
-                        let img = graphics::Image::from_path(ctx, "/pngwing.com.png")?;
                         canvas.draw(
-                            &img,
+                            &self.colorwheel,
                             graphics::DrawParam::new()
                                 .dest([WINSIZE + 10., 250.])
                                 .scale([0.3, 0.3]),
                         );
                     }
 
-                    // let mesh = mesh_builder.build();
                     let mesh = Mesh::from_data(ctx, mesh_builder.build());
                     canvas.draw(&mesh, DrawParam::default());
 
@@ -943,6 +973,16 @@ impl event::EventHandler<ggez::GameError> for MainState {
                 graphics::Text::new(vicsekflag_str).set_scale(PxScale::from(30.0)),
                 Vec2::new(WINSIZE + 10.0, 530.0),
             );
+            let NNinteracton_str = format!("num of interactions: {:.1}", self.NNinteraction);
+            canvas.draw(
+                &graphics::Text::new(NNinteracton_str),
+                Vec2::new(WINSIZE + 10.0, 630.0),
+            );
+            let NNflag_str = format!("NN: {:.1}", self.NNflag);
+            canvas.draw(
+                &graphics::Text::new(NNflag_str),
+                Vec2::new(WINSIZE + 10.0, 660.0),
+            );
 
             let noise_str = format!("Noise: {:.1}", self.noise);
             canvas.draw(
@@ -998,7 +1038,7 @@ impl event::EventHandler<ggez::GameError> for MainState {
 
 pub fn main() -> GameResult {
     rayon::ThreadPoolBuilder::new()
-        .num_threads(8)
+        .num_threads(1)
         .build_global()
         .unwrap();
 
