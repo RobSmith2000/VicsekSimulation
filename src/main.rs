@@ -1,4 +1,5 @@
 // To run at build speed
+// test
 // cargo run --release -- -C target=cpu_native
 #[allow(deprecated)]
 //// Imports
