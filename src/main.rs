@@ -8,6 +8,9 @@ use ggez::{
 // To run at build speed
 // test
 // cargo run --release -- -C target=cpu_native
+mod functions;
+use functions::*;
+
 #[allow(deprecated)]
 //// Imports
 use ggez::{
@@ -25,494 +28,6 @@ use std::{
     collections::{HashMap, HashSet},
     time::Instant,
 };
-
-//// Functions
-fn randpartigen(boxlen: f32) -> Vec<f32> {
-    // Generate a random position and bearning inside the box
-    let mut rng: ThreadRng = rand::thread_rng();
-    let coords: Vec<f32> = vec![
-        rng.gen_range((0.0)..(boxlen)) as f32,
-        rng.gen_range((0.0)..(boxlen)) as f32,
-        rng.gen_range((0.0)..(2. * PI)) as f32,
-    ];
-    return coords;
-}
-
-fn box_nn(boxcoord: Vec<i32>, boxlen: f32) -> Vec<Vec<i32>> {
-    // Gives surrounding 3x3 grid given the current box including periodic boundry conditions
-    // box is labeled as [x,y]
-    let boxlen: i32 = (boxlen) as i32;
-    let x: i32 = boxcoord[0];
-    let y: i32 = boxcoord[1];
-    let nnlist: Vec<Vec<i32>> = vec![
-        vec![
-            (x - 1 as i32).rem_euclid(boxlen),
-            (y - 1 as i32).rem_euclid(boxlen),
-        ],
-        vec![
-            (x as i32).rem_euclid(boxlen),
-            (y - 1 as i32).rem_euclid(boxlen),
-        ],
-        vec![
-            (x + 1 as i32).rem_euclid(boxlen),
-            (y - 1 as i32).rem_euclid(boxlen),
-        ],
-        vec![
-            (x - 1 as i32).rem_euclid(boxlen),
-            (y as i32).rem_euclid(boxlen),
-        ],
-        vec![(x as i32).rem_euclid(boxlen), (y as i32).rem_euclid(boxlen)],
-        vec![
-            (x + 1 as i32).rem_euclid(boxlen),
-            (y as i32).rem_euclid(boxlen),
-        ],
-        vec![
-            (x - 1 as i32).rem_euclid(boxlen),
-            (y + 1 as i32).rem_euclid(boxlen),
-        ],
-        vec![
-            (x as i32).rem_euclid(boxlen),
-            (y + 1 as i32).rem_euclid(boxlen),
-        ],
-        vec![
-            (x + 1 as i32).rem_euclid(boxlen),
-            (y + 1 as i32).rem_euclid(boxlen),
-        ],
-    ];
-    return nnlist;
-}
-
-fn new_angle_for_index_array(
-    // The angle update to be parallalised if vicsek flag == 1 perform standard vicsek if nnflag == 1 consider nearest neighbours
-    partialhashmap: HashMap<Vec<i32>, Vec<usize>>,
-    particlelist: &Vec<Vec<f32>>,
-    boxlen: f32,
-    noise: f32,
-    vicsekflag: bool,
-    blindangle: f32,
-    maxrotangle: f32,
-    nninteractionnum: u32,
-    nnflag: bool,
-) -> Vec<Vec<f32>> {
-    let mut new_angle_for_index_array: Vec<Vec<f32>> = Vec::new();
-    // Go though each boxcoord given and append angles and indicies to the output array
-    for (currentboxcoord, currentboxcoordpartiindicies) in partialhashmap.iter() {
-        // Get parti indicies from surrounding boxes
-        let mut indecies_to_check: Vec<usize> = Vec::new();
-        for checkingbox in &mut box_nn(currentboxcoord.to_vec(), boxlen).into_iter() {
-            if partialhashmap.contains_key(&checkingbox) {
-                indecies_to_check.extend(partialhashmap.get(&checkingbox).unwrap());
-            }
-        }
-        // Update angle for every particle for current box
-        for activepartiindex in currentboxcoordpartiindicies {
-            let mut sum_of_sin: f32 = 0.0;
-            let mut sum_of_cos: f32 = 0.0;
-            let mut rng: ThreadRng = rand::thread_rng();
-
-            let currentparti: &Vec<f32> = &particlelist[*activepartiindex];
-            let currentpartix: f32 = currentparti[0];
-            let currentpartiy: f32 = currentparti[1];
-            let currentpartia: f32 = currentparti[2];
-
-            // If nn is on this will collect all particles within conditions
-            let mut parti_nnlist: Vec<Vec<f32>> = Vec::new();
-            for otherindex in &indecies_to_check {
-                // vicsek conditions
-                if vicsekflag == true {
-                    let otherparti: &Vec<f32> = &particlelist[*otherindex];
-                    let otherpartix: f32 = otherparti[0];
-                    let otherpartiy: f32 = otherparti[1];
-                    let otherpartia: f32 = otherparti[2];
-
-                    let mut dx: f32 = (currentpartix - otherpartix).abs();
-                    let mut dy: f32 = (currentpartiy - otherpartiy).abs();
-
-                    // Adjusting distance for periodic boundry conditions
-                    if dx > boxlen / 2.0 {
-                        dx = boxlen - dx;
-                    }
-                    if dy > boxlen / 2.0 {
-                        dy = boxlen - dy;
-                    }
-
-                    let distsquared: f32 = dx * dx + dy * dy;
-
-                    if distsquared < 1.0 {
-                        if nnflag == true {
-                            parti_nnlist.push(vec![distsquared, otherpartia]);
-                        } else {
-                            sum_of_sin += otherpartia.sin();
-                            sum_of_cos += otherpartia.cos();
-                        }
-                    }
-
-                    // milling conditions
-                } else {
-                    let otherparti: &Vec<f32> = &particlelist[*otherindex];
-                    let otherpartix: f32 = otherparti[0];
-                    let otherpartiy: f32 = otherparti[1];
-                    let otherpartia: f32 = otherparti[2];
-
-                    let velx: f32 = currentpartia.sin();
-                    let vely: f32 = currentpartia.cos();
-                    let mut distx: f32 = otherpartix - currentpartix;
-                    let mut disty: f32 = otherpartiy - currentpartiy;
-
-                    // 3x3 box coord correction with periodic boundry conditions
-                    if (distx).abs() > 2.0 {
-                        if otherpartix > currentpartix {
-                            distx -= boxlen;
-                        } else {
-                            distx += boxlen;
-                        }
-                    }
-                    if (disty).abs() > 2.0 {
-                        if otherpartiy > currentpartiy {
-                            disty -= boxlen;
-                        } else {
-                            disty += boxlen;
-                        }
-                    }
-                    let distsquared: f32 = (distx * distx) + (disty * disty);
-                    // This condition is required so that the arctan is well defined
-                    if distsquared == 0. {
-                        if nnflag == true {
-                            parti_nnlist.push(vec![distsquared, otherpartia]);
-                        } else {
-                            sum_of_sin += otherpartia.sin();
-                            sum_of_cos += otherpartia.cos();
-                        }
-                    }
-                    // Condition to check if within radius
-                    else if distsquared < 1.0 {
-                        // Using dotproduct to calculate difference in angle
-                        let dotprod: f32 = ((distx * velx) + (disty * vely)) / (distsquared).sqrt();
-                        let diffanglerad: f32 = dotprod.acos();
-                        // Conditions to check if within viewing angle
-                        if diffanglerad < (180. - blindangle / 2.0) * (PI / 180.) {
-                            if nnflag == true {
-                                parti_nnlist.push(vec![distsquared, otherpartia]);
-                            } else {
-                                sum_of_sin += otherpartia.sin();
-                                sum_of_cos += otherpartia.cos();
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Use nn list to only add nearest n particles
-            if nnflag == true {
-                // Sorting nnlist so that neasest parti is closest
-                parti_nnlist.sort_by(|a, b| a[0].partial_cmp(&b[0]).unwrap_or(Ordering::Equal));
-                // Adding the angles of the nearest n particles
-                for i in 0..(nninteractionnum as usize + 1) {
-                    // Fixing crashes
-                    if parti_nnlist.len() == 0 {
-                        break;
-                    }
-                    // Only call the nearest neighbor if the index exists
-                    if i > parti_nnlist.len() - 1 {
-                        break;
-                    };
-                    sum_of_sin += parti_nnlist[i][1].sin();
-                    sum_of_cos += parti_nnlist[i][1].cos();
-                }
-            }
-
-            // Create a new angle from the interaction
-            let mut arctan: f32 = f32::atan2(sum_of_sin, sum_of_cos);
-            let maxangle: f32 = maxrotangle * (PI / 180.);
-
-            // We modify the arctan so it cant be larger than the max angle
-            if vicsekflag == false {
-                let mut avangle: f32 = arctan.rem_euclid(2. * PI);
-                let curangle: f32 = currentpartia.rem_euclid(2. * PI);
-
-                // Logic to get the correct modular arithmatic of angles
-                if avangle > curangle {
-                    let case1: f32 = avangle - curangle;
-                    let case2: f32 = (2. * PI) + curangle - avangle;
-                    if case1 < case2 {
-                        if case1 > maxangle {
-                            avangle = curangle + maxangle;
-                        }
-                    }
-                    if case2 < case1 {
-                        if case2 > maxangle {
-                            avangle = (curangle - maxangle).rem_euclid(2. * PI);
-                        }
-                    }
-                }
-                if curangle > avangle {
-                    let case1: f32 = curangle - avangle;
-                    let case2: f32 = (2. * PI) + avangle - curangle;
-                    if case1 < case2 {
-                        if case1 > maxangle {
-                            avangle = curangle - maxangle;
-                        }
-                    }
-                    if case2 < case1 {
-                        if case2 > maxangle {
-                            avangle = (curangle + maxangle).rem_euclid(2. * PI);
-                        }
-                    }
-                }
-                // Updating the arctan to the limited angle
-                arctan = avangle;
-            }
-
-            // Include random angle
-            let mut randangle: f32 = 0.0;
-            if noise > 0.0 {
-                randangle += rng.gen_range((-noise / 2.0)..(noise / 2.0)) as f32;
-            }
-
-            let updatedangle: f32 = arctan + randangle;
-
-            // println!("");
-            // println!("rand{:?}", randangle);
-            // println!("arctan{:?}", arctan);
-            // println!("updateangle{:?}", updatedangle);
-            // println!("activeparti{:?}", activepartiindex);
-            let new_angle_for_index: Vec<f32> = vec![*activepartiindex as f32, updatedangle];
-            new_angle_for_index_array.push(new_angle_for_index)
-        }
-    }
-    return new_angle_for_index_array;
-}
-
-fn convert_hsv_to_rgb(pixel: &Vec<f32>) -> [f32; 3] {
-    // To convert angles into colors
-    let [hue, saturation, value] = [pixel[0], pixel[1] / 100., pixel[2] / 100.];
-    let max: f32 = value;
-    let c: f32 = saturation * value;
-    let min: f32 = max - c;
-    let h_prime: f32 = if hue >= 300. {
-        (hue - 360.) / 60.
-    } else {
-        hue / 60.
-    };
-    let (r, g, b) = match h_prime {
-        x if -1. <= x && x < 1. => {
-            if h_prime < 0. {
-                (max, min, min - h_prime * c)
-            } else {
-                (max, min + h_prime * c, min)
-            }
-        }
-        x if 1. <= x && x < 3. => {
-            if h_prime < 2. {
-                (min - (h_prime - 2.) * c, max, min)
-            } else {
-                (min, max, min + (h_prime - 2.) * c)
-            }
-        }
-        x if 3. <= x && x < 5. => {
-            if h_prime < 4. {
-                (min, min - (h_prime - 4.) * c, max)
-            } else {
-                (min + (h_prime - 4.) * c, min, max)
-            }
-        }
-        _ => unreachable!(),
-    };
-    [r, g, b]
-}
-
-fn semicirclearc(angle: f32, boxlen: f32) -> [Point2<f32>; 361] {
-    let mut points = [Point2::from([0.0, 0.0]); 361];
-
-    for i in 0..360 {
-        points[i] = Point2::from([
-            0.0 + (((360. - angle) / 360.) * (PI / 180.) * (i as f32) as f32).sin() * WINSIZE
-                / (boxlen * 2.1),
-            0.0 + (((360. - angle) / 360.) * (PI / 180.) * (i as f32) as f32).cos() * WINSIZE
-                / (boxlen * 2.1),
-        ])
-    }
-    return points;
-}
-
-// returns NN index list
-fn RangeQuery(
-    currentindex: usize,
-    partilist: &Vec<Vec<f32>>,
-    hashmap: &HashMap<Vec<i32>, Vec<usize>>,
-    epsilon: f32,
-    boxlen: f32,
-) -> Vec<usize> {
-    let mut neighbourslist = Vec::new();
-    let boxindx = vec![
-        partilist[currentindex as usize][0].floor() as i32,
-        partilist[currentindex as usize][1].floor() as i32,
-    ];
-
-    // gather indecies from surrounding boxes
-    let mut indecies_to_check: Vec<usize> = Vec::new();
-    for checkingbox in &mut box_nn(boxindx, boxlen).into_iter() {
-        if hashmap.contains_key(&checkingbox) {
-            indecies_to_check.extend(hashmap.get(&checkingbox).unwrap());
-        }
-    }
-
-    let currentpartix: f32 = partilist[currentindex][0];
-    let currentpartiy: f32 = partilist[currentindex][1];
-
-    for otherindex in indecies_to_check {
-        let otherparti: &Vec<f32> = &partilist[otherindex];
-        let otherpartix: f32 = otherparti[0];
-        let otherpartiy: f32 = otherparti[1];
-        let mut dx: f32 = (currentpartix - otherpartix).abs();
-        let mut dy: f32 = (currentpartiy - otherpartiy).abs();
-
-        if dx > boxlen / 2.0 {
-            dx = boxlen - dx;
-        }
-        if dy > boxlen / 2.0 {
-            dy = boxlen - dy;
-        }
-
-        let distsquared: f32 = dx * dx + dy * dy;
-        if distsquared.sqrt() < epsilon {
-            neighbourslist.push(otherindex);
-        }
-    }
-    return neighbourslist;
-}
-
-fn DBSCAN(
-    partilist: &Vec<Vec<f32>>,
-    hashmap: &HashMap<Vec<i32>, Vec<usize>>,
-    epsilon: f32,
-    nmin: i32,
-    boxlen: f32,
-) -> HashMap<i32, Vec<usize>> {
-    // ) -> Vec<_> {
-    let mut clusterlist: Vec<i32> = std::iter::repeat(0)
-        .take(partilist.len())
-        .collect::<Vec<_>>();
-
-    // Perform DBSCAN on the partilist using the hashmap to speed up range finding to populate clusterlist
-    let mut cluster = 0;
-    for currentindex in 0..partilist.len() {
-        if clusterlist[currentindex] != 0 {
-            continue;
-        }
-        let mut neighbours = RangeQuery(currentindex, &partilist, &hashmap, epsilon, boxlen);
-
-        if neighbours.len() < nmin as usize {
-            clusterlist[currentindex] = -1;
-            continue;
-        }
-        cluster += 1;
-        clusterlist[currentindex] = cluster;
-
-        let mut Seed = neighbours;
-        Seed.retain(|value| *value != currentindex);
-
-        let mut cur = 0;
-        while cur < Seed.len() {
-            let Q = Seed[cur];
-            if clusterlist[Q] == -1 {
-                clusterlist[Q] = cluster;
-            }
-            if clusterlist[Q] != 0 {
-                cur += 1;
-                continue;
-            }
-            clusterlist[Q] = cluster;
-
-            neighbours = RangeQuery(Q, &partilist, &hashmap, epsilon, boxlen);
-            if neighbours.len() >= nmin as usize {
-                for val in &neighbours {
-                    Seed.push(*val);
-                }
-            }
-            cur += 1;
-        }
-    }
-
-    // Modify clusterlist to give a vector decending cluster size, might at somepoint be able to put this in DBSCAN code
-    let mut clustermap: HashMap<i32, Vec<usize>> = HashMap::new();
-    for index in 0..partilist.len() {
-        let elem = clusterlist[index];
-        clustermap.entry(elem).or_insert(Vec::new()).push(index);
-    }
-
-    // let mut vec: Vec<_> = tempmap.into_iter().collect();
-    // vec.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
-    // let sorted_map: Vec<_> = vec.into_iter().collect();
-
-    ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-    // return vec![(1, vec![3 as usize])];
-    return clustermap;
-}
-
-fn comcalc(indecieslist: &Vec<usize>, partilist: &Vec<Vec<f32>>, boxlen: f32) -> Vec<f32> {
-    // x should be outer
-    // y should be inner
-    let mut outer_xsum = 0.;
-    let mut outer_ysum = 0.;
-    let mut inner_xsum = 0.;
-    let mut inner_ysum = 0.;
-    for index in indecieslist {
-        // Projection onto torus
-        let outerangle = partilist[*index][0] * (2. * PI) / boxlen;
-        let innerangle = partilist[*index][1] * (2. * PI) / boxlen;
-        outer_xsum += outerangle.sin();
-        outer_ysum += outerangle.cos();
-        inner_xsum += innerangle.sin();
-        inner_ysum += innerangle.cos();
-    }
-
-    // Normalising and converting back to flat space
-    let mut xcom = f32::atan2(
-        (outer_ysum / ((outer_xsum * outer_xsum) + (outer_ysum * outer_ysum)).sqrt()),
-        (outer_xsum / ((outer_xsum * outer_xsum) + (outer_ysum * outer_ysum)).sqrt()),
-    ) * (180. / PI);
-    // println!("length{:?}", (xcom));
-    if xcom >= 0. && xcom <= 90. {
-        xcom = 90. - xcom;
-    }
-    if xcom >= 90. && xcom <= 180. {
-        xcom = 270. + (180. - xcom);
-    }
-    if xcom <= 0. && xcom >= -90. {
-        xcom = 90. - xcom;
-    }
-    if xcom <= -90. && xcom >= -180. {
-        xcom = 270. - (180. + xcom)
-    }
-    xcom = xcom * (PI / 180.) * (boxlen / (2. * PI));
-
-    let mut ycom = f32::atan2(
-        (inner_ysum / ((inner_xsum * inner_xsum) + (inner_ysum * inner_ysum)).sqrt()),
-        (inner_xsum / ((inner_xsum * inner_xsum) + (inner_ysum * inner_ysum)).sqrt()),
-    ) * (180. / PI);
-    // println!("length{:?}", (xcom));
-    if ycom >= 0. && ycom <= 90. {
-        ycom = 90. - ycom;
-    }
-    if ycom >= 90. && ycom <= 180. {
-        ycom = 270. + (180. - ycom);
-    }
-    if ycom <= 0. && ycom >= -90. {
-        ycom = 90. - ycom;
-    }
-    if ycom <= -90. && ycom >= -180. {
-        ycom = 270. - (180. + ycom)
-    }
-    ycom = ycom * (PI / 180.) * (boxlen / (2. * PI));
-
-    return vec![xcom, ycom];
-}
-// Constants
-const WINSIZE: f32 = 900.0;
-// const TIMEDEBUG: i32 = 0;
-const CPU_NUM: i32 = 8;
-const PI: f32 = std::f32::consts::PI;
 
 struct MainState {
     time: i32,
@@ -536,12 +51,20 @@ struct MainState {
     dbscanepsilon: f32,
     freezeflag: bool,
     clustermap: HashMap<i32, Vec<usize>>,
+    history: Vec<Vec<Vec<f32>>>,
+    clusterhistory: Vec<Vec<Vec<f32>>>,
+    highlightfirstflag: bool,
+    vortexnum: i32,
+    simplevortexnum: i32,
+    vortexdetection: bool,
+    clusterflagcolor: bool,
+    clusterflagcenter: bool,
 }
 
 impl MainState {
     fn new(ctx: &mut Context) -> GameResult<MainState> {
-        let initpartinum: i32 = 2;
-        let initboxlen: f32 = 20.0;
+        let initpartinum: i32 = 2500;
+        let initboxlen: f32 = 25.;
 
         // Generate list of random particles
         let mut parti_list = Vec::new();
@@ -553,8 +76,8 @@ impl MainState {
 
         Ok(MainState {
             time: 0,
-            noise: 0.4,
-            speed: 0.03,
+            noise: 0.0,
+            speed: 0.1,
             blindangle: 180.,
             partilist: parti_list,
             boxlen: initboxlen,
@@ -563,16 +86,24 @@ impl MainState {
             stateupdateflag: 0,
             visualiseflag: true,
             colorflag: false,
-            vicsekflag: true,
-            maxrotangle: 8.,
+            vicsekflag: false,
+            maxrotangle: 10.,
             colorwheel: cwheel,
             nninteraction: 1,
             nnflag: false,
             clusterflag: false,
-            dbscannmin: 0,
-            dbscanepsilon: 0.5,
+            dbscannmin: 5,
+            dbscanepsilon: 0.1,
             freezeflag: false,
             clustermap: HashMap::new(),
+            history: vec![vec![vec![0.]]],
+            clusterhistory: vec![vec![vec![0.]]],
+            highlightfirstflag: true,
+            vortexnum: 0,
+            simplevortexnum: 0,
+            vortexdetection: true,
+            clusterflagcolor: false,
+            clusterflagcenter: false,
         })
     }
 }
@@ -836,26 +367,26 @@ impl event::EventHandler<ggez::GameError> for MainState {
                     }
                 }
 
-                if k_ctx.is_key_pressed(KeyCode::Key1) {
-                    self.dbscannmin += 1;
-                }
+                // if k_ctx.is_key_pressed(KeyCode::Key1) {
+                //     self.dbscannmin += 1;
+                // }
 
-                if k_ctx.is_key_pressed(KeyCode::Key2) {
-                    self.dbscannmin -= 1;
-                    if self.dbscannmin < 0 {
-                        self.dbscannmin = 0
-                    }
-                }
+                // if k_ctx.is_key_pressed(KeyCode::Key2) {
+                //     self.dbscannmin -= 1;
+                //     if self.dbscannmin < 0 {
+                //         self.dbscannmin = 0
+                //     }
+                // }
 
-                if k_ctx.is_key_pressed(KeyCode::Key3) {
-                    self.dbscanepsilon += 0.01;
-                }
-                if k_ctx.is_key_pressed(KeyCode::Key4) {
-                    self.dbscanepsilon -= 0.01;
-                    if self.dbscanepsilon < 0.01 {
-                        self.dbscanepsilon = 0.01
-                    }
-                }
+                // if k_ctx.is_key_pressed(KeyCode::Key3) {
+                //     self.dbscanepsilon += 0.01;
+                // }
+                // if k_ctx.is_key_pressed(KeyCode::Key4) {
+                //     self.dbscanepsilon -= 0.01;
+                //     if self.dbscanepsilon < 0.01 {
+                //         self.dbscanepsilon = 0.01
+                //     }
+                // }
 
                 ///////////////////////////////////////////////////////////////////////
                 // Calculate Normalised Velocity every 10 steps
@@ -908,13 +439,8 @@ impl event::EventHandler<ggez::GameError> for MainState {
                 // Calculate the clustering
                 if self.clusterflag == true {
                     if self.dbscannmin > 0 {
-                        self.clustermap = DBSCAN(
-                            &self.partilist,
-                            &boxhashmap,
-                            self.dbscanepsilon,
-                            self.dbscannmin,
-                            self.boxlen,
-                        );
+                        self.clustermap =
+                            DBSCAN(&self.partilist, &boxhashmap, 0.5, 10, self.boxlen);
                     } else {
                         // when nmin is 0 we consider everything as a single cluster
                         let mut everyindexhasmap = HashMap::new();
@@ -960,6 +486,15 @@ impl event::EventHandler<ggez::GameError> for MainState {
                     self.partilist[change[0] as usize][2] = change[1]
                 }
                 // println!("{:?}", self.partilist)
+
+                // History of the updates for circle need to apply a flag to this
+                // // if self.time % 10 == 0 {
+                let mut state = &self.partilist;
+                self.history.push(state.to_vec());
+                if self.history.len() > 3 {
+                    self.history.remove(0);
+                    // }
+                }
             }
         }
 
@@ -987,6 +522,18 @@ impl event::EventHandler<ggez::GameError> for MainState {
             if input.keycode == Some(keyboard::KeyCode::P) {
                 self.freezeflag = !self.freezeflag;
             };
+            if input.keycode == Some(keyboard::KeyCode::Key0) {
+                self.highlightfirstflag = !self.highlightfirstflag;
+            };
+            if input.keycode == Some(keyboard::KeyCode::Key9) {
+                self.vortexdetection = !self.vortexdetection;
+            };
+            if input.keycode == Some(keyboard::KeyCode::Key7) {
+                self.clusterflagcolor = !self.clusterflagcolor;
+            };
+            if input.keycode == Some(keyboard::KeyCode::Key8) {
+                self.clusterflagcenter = !self.clusterflagcenter;
+            };
         }
         Ok(())
     }
@@ -1008,14 +555,14 @@ impl event::EventHandler<ggez::GameError> for MainState {
                         ctx,
                         graphics::DrawMode::fill(),
                         ggez::graphics::Rect::new(0., 0., WINSIZE, WINSIZE),
-                        Color::BLACK,
+                        Color::WHITE,
                     )?;
                     canvas.draw(&highlighttest, DrawParam::default());
 
                     let mut mesh_builder = MeshBuilder::new();
                     for particle in self.partilist.iter() {
                         // Defualt color should be white
-                        let mut particolor = Color::WHITE;
+                        let mut particolor = Color::BLACK;
                         if self.colorflag == true {
                             let [r, g, b] = convert_hsv_to_rgb(&vec![
                                 particle[2].rem_euclid(2. * PI) * (180. / PI),
@@ -1057,8 +604,8 @@ impl event::EventHandler<ggez::GameError> for MainState {
                     canvas.draw(&mesh, DrawParam::default());
 
                     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-                    // Color cluster particles and display COM as green circ
 
+                    self.simplevortexnum = 0;
                     if self.clusterflag == true {
                         let tempmap = &self.clustermap;
                         let mut vec: Vec<_> = tempmap.into_iter().collect();
@@ -1070,127 +617,380 @@ impl event::EventHandler<ggez::GameError> for MainState {
                         for sizeindex in 0..sorted_map_clustermap.len() {
                             let (key, values) = &sorted_map_clustermap[sizeindex];
                             let mut particolor = Color::WHITE;
-                            if key != &&-1 {
-                                let [r, g, b] = convert_hsv_to_rgb(&vec![
-                                    ((cangle * 10.) as f32).rem_euclid(2. * PI) * (180. / PI),
-                                    100.0,
-                                    100.0,
-                                ]);
-                                particolor = Color::new(r, g, b, 1.0);
-                                cangle += 10.;
-                            }
+                            if self.clusterflagcolor == true {
+                                if key != &&-1 {
+                                    let [r, g, b] = convert_hsv_to_rgb(&vec![
+                                        ((cangle * 10.) as f32).rem_euclid(2. * PI) * (180. / PI),
+                                        100.0,
+                                        100.0,
+                                    ]);
+                                    particolor = Color::new(r, g, b, 1.0);
+                                    cangle += 10.;
+                                }
 
-                            for partiindex in *values {
-                                mesh_builder.circle(
-                                    DrawMode::fill(),
-                                    Vec2::new(
-                                        self.partilist[*partiindex][0] * (WINSIZE / self.boxlen),
-                                        (self.boxlen - self.partilist[*partiindex][1])
-                                            * (WINSIZE / self.boxlen),
-                                    ),
-                                    2.0,
-                                    10.0,
-                                    particolor, // Color::new(r, g, b, 1.0),
-                                )?;
-                                mesh_builder.line(
-                                    &[
+                                for partiindex in *values {
+                                    mesh_builder.circle(
+                                        DrawMode::fill(),
                                         Vec2::new(
                                             self.partilist[*partiindex][0]
                                                 * (WINSIZE / self.boxlen),
                                             (self.boxlen - self.partilist[*partiindex][1])
                                                 * (WINSIZE / self.boxlen),
                                         ),
-                                        Vec2::new(
-                                            (self.partilist[*partiindex][0]
-                                                + self.partilist[*partiindex][2].sin())
-                                                * (WINSIZE / self.boxlen),
-                                            (self.boxlen
-                                                - (self.partilist[*partiindex][1]
-                                                    + self.partilist[*partiindex][2].cos()))
-                                                * (WINSIZE / self.boxlen),
-                                        ),
-                                    ],
-                                    1.0,
-                                    particolor,
-                                )?;
+                                        2.0,
+                                        10.0,
+                                        particolor, // Color::new(r, g, b, 1.0),
+                                    )?;
+                                    mesh_builder.line(
+                                        &[
+                                            Vec2::new(
+                                                self.partilist[*partiindex][0]
+                                                    * (WINSIZE / self.boxlen),
+                                                (self.boxlen - self.partilist[*partiindex][1])
+                                                    * (WINSIZE / self.boxlen),
+                                            ),
+                                            Vec2::new(
+                                                (self.partilist[*partiindex][0]
+                                                    + self.partilist[*partiindex][2].sin())
+                                                    * (WINSIZE / self.boxlen),
+                                                (self.boxlen
+                                                    - (self.partilist[*partiindex][1]
+                                                        + self.partilist[*partiindex][2].cos()))
+                                                    * (WINSIZE / self.boxlen),
+                                            ),
+                                        ],
+                                        1.0,
+                                        particolor,
+                                    )?;
+                                }
                             }
 
                             // COM Calculations
-
-                            fn normvel_cluster(
-                                values: &Vec<usize>,
-                                partilist: &Vec<Vec<f32>>,
-                            ) -> f32 {
-                                let mut sumsin: f32 = 0.0;
-                                let mut sumcos: f32 = 0.0;
-                                for value in values {
-                                    let parti = &partilist[*value];
-                                    sumsin += &parti[2].sin();
-                                    sumcos += &parti[2].cos();
-                                }
-                                let normvel = (1.0 / partilist.len() as f32)
-                                    * f32::sqrt((sumsin * sumsin) + (sumcos * sumcos));
-                                return normvel;
-                            }
-
                             if key != &&-1 {
+                                // Displaying COM and vortecies under criterion
                                 let com = comcalc(values, &self.partilist, self.boxlen);
                                 let xcom = com[0];
                                 let ycom = com[1];
-                                let mut sum = 0.;
-                                for value in *values {
-                                    let parti = &self.partilist[*value];
-                                    // let otherparti: &Vec<f32> = &particlelist[*otherindex];
-                                    // TODO refactor this as a torus distance function
-                                    let partix: f32 = parti[0];
-                                    let partiy: f32 = parti[1];
-                                    let partia: f32 = parti[2];
+                                let normvel = normvel_cluster(&values, &self.partilist);
 
-                                    let velx: f32 = partia.sin();
-                                    let vely: f32 = partia.cos();
-                                    let mut distx: f32 = partix - xcom;
-                                    let mut disty: f32 = partiy - ycom;
+                                let normangvel =
+                                    normangvel_cluster(&values, &self.partilist, self.boxlen);
 
-                                    // 3x3 box coord correction with periodic boundry conditions
-                                    if (distx).abs() > self.boxlen / 2. {
-                                        if partix > xcom {
-                                            distx -= self.boxlen;
-                                        } else {
-                                            distx += self.boxlen;
-                                        }
-                                    }
-                                    if (disty).abs() > self.boxlen / 2. {
-                                        if partiy > ycom {
-                                            disty -= self.boxlen;
-                                        } else {
-                                            disty += self.boxlen;
-                                        }
-                                    }
-                                    let distsquared: f32 = (distx * distx) + (disty * disty);
-
-                                    let angmom = (((distx * vely) - (disty * velx)).abs())
-                                        / distsquared.sqrt();
-                                    sum += angmom;
-                                }
-                                let normangvel = sum / values.len() as f32;
-                                let normvel = normvel_cluster(*values, &self.partilist);
                                 // println!("{:?}", sum / values.len() as f32);
-
-                                mesh_builder.circle(
-                                    graphics::DrawMode::fill(),
-                                    Vec2::new(
-                                        xcom * (WINSIZE / self.boxlen),
-                                        (self.boxlen - ycom) * (WINSIZE / self.boxlen),
-                                    ),
-                                    WINSIZE / (self.boxlen * 2.0),
-                                    1.0,
-                                    Color::GREEN,
-                                )?;
+                                // mesh_builder.circle(
+                                //     graphics::DrawMode::fill(),
+                                //     Vec2::new(
+                                //         xcom * (WINSIZE / self.boxlen),
+                                //         (self.boxlen - ycom) * (WINSIZE / self.boxlen),
+                                //     ),
+                                //     WINSIZE / (self.boxlen * 2.0),
+                                //     1.0,
+                                //     Color::GREEN,
+                                // )?;
+                                if self.clusterflagcenter == true {
+                                    if (normangvel > 0.75) && (normvel < 0.5) {
+                                        self.simplevortexnum += 1;
+                                        mesh_builder.circle(
+                                            graphics::DrawMode::fill(),
+                                            Vec2::new(
+                                                xcom * (WINSIZE / self.boxlen),
+                                                (self.boxlen - ycom) * (WINSIZE / self.boxlen),
+                                            ),
+                                            10.,
+                                            1.0,
+                                            Color::RED,
+                                        )?;
+                                    }
+                                }
                             };
                         }
                         let mesh = Mesh::from_data(ctx, mesh_builder.build());
                         canvas.draw(&mesh, DrawParam::default());
                     };
+                    // Color cluster particles and display COM as green circ
+                    //green
+
+                    // vortex detection via cor
+                    self.vortexnum = 0;
+                    if self.vortexdetection == true {
+                        let mut mesh_builder = MeshBuilder::new();
+                        if self.time > 50 {
+                            if (&self.history[0].len() == &self.history[1].len())
+                                && (&self.history[1].len() == &self.history[2].len())
+                            {
+                                // Generating Cor list
+                                let mut corlist = Vec::new();
+                                for i in 0..self.history[1].len() {
+                                    let partia = &self.history[0][i];
+                                    let partib = &self.history[1][i];
+                                    let partic = &self.history[2][i];
+                                    let mut cor =
+                                        threepointcirc(partic, partib, partia, self.boxlen);
+                                    // Filter out the cor that are massive
+                                    if (cor[0] != -1.) && (cor[1] != -1.) {
+                                        cor.push(i as f32);
+                                        corlist.push(cor);
+                                    }
+
+                                    // Printing 3 history to screen
+                                    // mesh_builder.circle(
+                                    //     DrawMode::fill(),
+                                    //     Vec2::new(
+                                    //         partia[0] * (WINSIZE / self.boxlen),
+                                    //         (self.boxlen - partia[1]) * (WINSIZE / self.boxlen),
+                                    //     ),
+                                    //     2.0,
+                                    //     10.0,
+                                    //     Color::BLUE,
+                                    // )?;
+                                    // mesh_builder.circle(
+                                    //     DrawMode::fill(),
+                                    //     Vec2::new(
+                                    //         partib[0] * (WINSIZE / self.boxlen),
+                                    //         (self.boxlen - partib[1]) * (WINSIZE / self.boxlen),
+                                    //     ),
+                                    //     2.0,
+                                    //     10.0,
+                                    //     Color::BLUE,
+                                    // )?;
+                                    // mesh_builder.circle(
+                                    //     DrawMode::fill(),
+                                    //     Vec2::new(
+                                    //         partic[0] * (WINSIZE / self.boxlen),
+                                    //         (self.boxlen - partic[1]) * (WINSIZE / self.boxlen),
+                                    //     ),
+                                    //     2.0,
+                                    //     10.0,
+                                    //     Color::BLUE,
+                                    // )?;
+                                }
+
+                                // plotting Cor list to screen
+                                // for cor in &corlist {
+                                //     mesh_builder.circle(
+                                //         DrawMode::fill(),
+                                //         Vec2::new(
+                                //             cor[0] * (WINSIZE / self.boxlen),
+                                //             (self.boxlen - cor[1]) * (WINSIZE / self.boxlen),
+                                //         ),
+                                //         2.0,
+                                //         10.0,
+                                //         Color::GREEN,
+                                //     )?;
+                                // }
+
+                                // let mesh = Mesh::from_data(ctx, mesh_builder.build());
+                                // canvas.draw(&mesh, DrawParam::default());
+
+                                // Creating Hash map for Cor
+
+                                let mut corhashmap = HashMap::new();
+                                for cor_indx in 0..corlist.len() {
+                                    // Assigning each particle to a box
+                                    let boxindx = vec![
+                                        corlist[cor_indx as usize][0].floor() as i32,
+                                        corlist[cor_indx as usize][1].floor() as i32,
+                                    ];
+
+                                    corhashmap
+                                        .entry(boxindx)
+                                        .or_insert(Vec::new())
+                                        .push(cor_indx);
+                                }
+
+                                // Calculate the clustering of Cor
+                                let mut corclustermap: HashMap<i32, Vec<usize>> = HashMap::new();
+                                if self.dbscannmin > 0 {
+                                    // corclustermap = DBSCAN(
+                                    //     &corlist,
+                                    //     &corhashmap,
+                                    //     self.dbscanepsilon,
+                                    //     self.dbscannmin,
+                                    //     self.boxlen,
+                                    // );
+                                    corclustermap =
+                                        DBSCAN(&corlist, &corhashmap, 0.12, 20, self.boxlen);
+                                }
+
+                                // outputting the clustering of Cor
+                                let tempmap = &corclustermap;
+                                let mut vec: Vec<_> = tempmap.into_iter().collect();
+                                vec.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+                                let sortedcorclustermap: Vec<_> = vec.into_iter().collect();
+                                // sortedcorclustermap has indicies to corlist of which the 3rd componenet has the index of partilist of the particle that formed the cor point
+                                // println!("{:?}", &sortedcorclustermap);
+                                let mut clustercomlist: Vec<Vec<f32>> = Vec::new();
+
+                                let mut mesh_builder = MeshBuilder::new();
+                                let mut cangle = 0.;
+                                for sizeindex in 0..sortedcorclustermap.len() {
+                                    let (key, values) = &sortedcorclustermap[sizeindex];
+                                    let mut corcolor = Color::BLACK;
+                                    // if key != &&-1 {
+                                    //     let [r, g, b] = convert_hsv_to_rgb(&vec![
+                                    //         ((cangle * 10.) as f32).rem_euclid(2. * PI) * (180. / PI),
+                                    //         100.0,
+                                    //         100.0,
+                                    //     ]);
+                                    //     corcolor = Color::new(r, g, b, 1.0);
+                                    //     cangle += 10.;
+                                    // }
+
+                                    // for corindex in *values {
+                                    //     mesh_builder.circle(
+                                    //         DrawMode::fill(),
+                                    //         Vec2::new(
+                                    //             corlist[*corindex][0] * (WINSIZE / self.boxlen),
+                                    //             (self.boxlen - corlist[*corindex][1])
+                                    //                 * (WINSIZE / self.boxlen),
+                                    //         ),
+                                    //         2.0,
+                                    //         10.0,
+                                    //         corcolor, // Color::new(r, g, b, 1.0),
+                                    //     )?;
+                                    // }
+                                    if key != &&-1 {
+                                        // need to go from cor to values again
+                                        let mut partilistindeciesfromcor: Vec<usize> = Vec::new();
+                                        for corindex in *values {
+                                            partilistindeciesfromcor
+                                                .push(corlist[*corindex][2] as usize)
+                                        }
+
+                                        let normvel = normvel_cluster(
+                                            &partilistindeciesfromcor,
+                                            &self.partilist,
+                                        );
+
+                                        let normangvel = normangvel_cluster(
+                                            &partilistindeciesfromcor,
+                                            &self.partilist,
+                                            self.boxlen,
+                                        );
+                                        if (normangvel > 0.75) && (normvel < 0.5) {
+                                            let corcom = comcalc(values, &corlist, self.boxlen);
+                                            let xcom = corcom[0];
+                                            let ycom = corcom[1];
+                                            clustercomlist.push(corcom);
+                                            // mesh_builder.circle(
+                                            //     graphics::DrawMode::fill(),
+                                            //     Vec2::new(
+                                            //         xcom * (WINSIZE / self.boxlen),
+                                            //         (self.boxlen - ycom) * (WINSIZE / self.boxlen),
+                                            //     ),
+                                            //     WINSIZE / (self.boxlen * 4.0),
+                                            //     1.0,
+                                            //     Color::YELLOW,
+                                            // )?;
+                                        }
+                                    }
+                                }
+
+                                // Keep history and update it
+                                let mut state = &clustercomlist;
+                                self.clusterhistory.push(state.to_vec());
+                                if self.clusterhistory.len() > 10 {
+                                    self.clusterhistory.remove(0);
+                                }
+                                // println!("{:?}", &self.clusterhistory);
+                                //something wrong here
+                                let mut flatclusterhistory = vec![];
+                                for sublist in self.clusterhistory.iter() {
+                                    for point in sublist.iter() {
+                                        // flat_points.push(point.clone());
+                                        flatclusterhistory.push(point.clone());
+                                    }
+                                }
+
+                                if flatclusterhistory.len() > 9 && self.time > 100 {
+                                    // we want to flatten the history into a list
+                                    let mut corhisthashmap = HashMap::new();
+                                    for cor_hist_indx in 0..flatclusterhistory.len() {
+                                        // Assigning each particle to a box
+                                        let boxindx = vec![
+                                            flatclusterhistory[cor_hist_indx as usize][0].floor()
+                                                as i32,
+                                            flatclusterhistory[cor_hist_indx as usize][1].floor()
+                                                as i32,
+                                        ];
+
+                                        corhisthashmap
+                                            .entry(boxindx)
+                                            .or_insert(Vec::new())
+                                            .push(cor_hist_indx);
+                                    }
+
+                                    // Calculate the clustering of Cor
+                                    let mut corhistoryclustermap: HashMap<i32, Vec<usize>> =
+                                        HashMap::new();
+                                    if self.dbscannmin > 0 {
+                                        corhistoryclustermap = DBSCAN(
+                                            &flatclusterhistory,
+                                            &corhisthashmap,
+                                            0.1,
+                                            5,
+                                            self.boxlen,
+                                        );
+                                    }
+
+                                    let tempmap = &corhistoryclustermap;
+                                    let mut vec: Vec<_> = tempmap.into_iter().collect();
+                                    vec.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+                                    let sortedcorhistoryclustermap: Vec<_> =
+                                        vec.into_iter().collect();
+
+                                    // remap all fo this
+                                    // let mut mesh_builder = MeshBuilder::new();
+                                    let mut cangle = 0.;
+                                    for sizeindex in 0..sortedcorhistoryclustermap.len() {
+                                        let (key, values) = &sortedcorhistoryclustermap[sizeindex];
+                                        let mut corcolor = Color::BLACK;
+                                        if key != &&-1 {
+                                            // let [r, g, b] = convert_hsv_to_rgb(&vec![
+                                            //     ((cangle * 10.) as f32).rem_euclid(2. * PI) * (180. / PI),
+                                            //     100.0,
+                                            //     100.0,
+                                            // ]);
+                                            // corcolor = Color::new(r, g, b, 1.0);
+                                            // cangle += 10.;
+
+                                            // for corindex in *values {
+                                            let corindex = values[0];
+                                            mesh_builder.circle(
+                                                DrawMode::fill(),
+                                                Vec2::new(
+                                                    &flatclusterhistory[corindex][0]
+                                                        * (WINSIZE / self.boxlen),
+                                                    (self.boxlen
+                                                        - &flatclusterhistory[corindex][1])
+                                                        * (WINSIZE / self.boxlen),
+                                                ),
+                                                10.0,
+                                                10.0,
+                                                // Color::GREEN, //
+                                                Color::new(
+                                                    0.,
+                                                    153. * (1. / 255.),
+                                                    51. * (1. / 255.),
+                                                    1.0,
+                                                ),
+                                            )?;
+                                            // }
+                                        }
+                                    }
+                                    self.vortexnum = (sortedcorhistoryclustermap.len() - 1) as i32;
+                                }
+                                // uncomment above
+
+                                // println!("Time {:?}, {:?}", self.time, self.clusterhistory);
+
+                                // println!("Time {:?}, {:?}", self.time, corlist);
+
+                                let mesh = Mesh::from_data(ctx, mesh_builder.build());
+                                canvas.draw(&mesh, DrawParam::default());
+                            }
+                        }
+                    }
 
                     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -1314,60 +1114,65 @@ impl event::EventHandler<ggez::GameError> for MainState {
 
                     //// old stuff
                     // Highlight first point
-                    let highlightfirst = graphics::Mesh::new_circle(
-                        ctx,
-                        graphics::DrawMode::fill(),
-                        vec2(0., 0.),
-                        WINSIZE / (self.boxlen * 2.0),
-                        1.0,
-                        Color::RED,
-                    )?;
-                    canvas.draw(
-                        &highlightfirst,
-                        Vec2::new(
-                            self.partilist[0][0] * (WINSIZE / self.boxlen),
-                            (self.boxlen - self.partilist[0][1]) * (WINSIZE / self.boxlen),
-                        ),
-                    );
-
-                    let redline = graphics::Mesh::new_line(
-                        ctx,
-                        &[
-                            Vec2::new(
-                                self.partilist[0][0] * (WINSIZE / self.boxlen),
-                                (self.boxlen - (self.partilist[0][1])) * (WINSIZE / self.boxlen),
-                            ),
-                            Vec2::new(
-                                (self.partilist[0][0] + (self.partilist[0][2].sin() * 2.0))
-                                    * (WINSIZE / self.boxlen),
-                                (self.boxlen
-                                    - (self.partilist[0][1] + (2.0 * self.partilist[0][2].cos())))
-                                    * (WINSIZE / self.boxlen),
-                            ),
-                        ],
-                        5.0,
-                        Color::RED,
-                    )?;
-
-                    canvas.draw(&redline, DrawParam::default());
-
-                    // Green viewing angle
-                    if self.vicsekflag == false {
-                        let blindarc = graphics::Mesh::new_polygon(
+                    if self.highlightfirstflag == true {
+                        let highlightfirst = graphics::Mesh::new_circle(
                             ctx,
                             graphics::DrawMode::fill(),
-                            &semicirclearc(self.blindangle, self.boxlen),
-                            Color::YELLOW,
+                            vec2(0., 0.),
+                            WINSIZE / (self.boxlen * 2.0),
+                            1.0,
+                            Color::RED,
                         )?;
                         canvas.draw(
-                            &blindarc,
-                            DrawParam::new()
-                                .dest(vec2(
-                                    self.partilist[0][0] * (WINSIZE / self.boxlen),
-                                    (self.boxlen - self.partilist[0][1]) * (WINSIZE / self.boxlen),
-                                ))
-                                .rotation(self.partilist[0][2] - self.blindangle * (PI / 360.)),
+                            &highlightfirst,
+                            Vec2::new(
+                                self.partilist[0][0] * (WINSIZE / self.boxlen),
+                                (self.boxlen - self.partilist[0][1]) * (WINSIZE / self.boxlen),
+                            ),
                         );
+
+                        let redline = graphics::Mesh::new_line(
+                            ctx,
+                            &[
+                                Vec2::new(
+                                    self.partilist[0][0] * (WINSIZE / self.boxlen),
+                                    (self.boxlen - (self.partilist[0][1]))
+                                        * (WINSIZE / self.boxlen),
+                                ),
+                                Vec2::new(
+                                    (self.partilist[0][0] + (self.partilist[0][2].sin() * 2.0))
+                                        * (WINSIZE / self.boxlen),
+                                    (self.boxlen
+                                        - (self.partilist[0][1]
+                                            + (2.0 * self.partilist[0][2].cos())))
+                                        * (WINSIZE / self.boxlen),
+                                ),
+                            ],
+                            5.0,
+                            Color::RED,
+                        )?;
+
+                        canvas.draw(&redline, DrawParam::default());
+
+                        // Green viewing angle
+                        if self.vicsekflag == false {
+                            let blindarc = graphics::Mesh::new_polygon(
+                                ctx,
+                                graphics::DrawMode::fill(),
+                                &semicirclearc(self.blindangle, self.boxlen),
+                                Color::GREEN,
+                            )?;
+                            canvas.draw(
+                                &blindarc,
+                                DrawParam::new()
+                                    .dest(vec2(
+                                        self.partilist[0][0] * (WINSIZE / self.boxlen),
+                                        (self.boxlen - self.partilist[0][1])
+                                            * (WINSIZE / self.boxlen),
+                                    ))
+                                    .rotation(self.partilist[0][2] - self.blindangle * (PI / 360.)),
+                            );
+                        }
                     }
                 }
             }
@@ -1441,7 +1246,7 @@ impl event::EventHandler<ggez::GameError> for MainState {
                 canvas.draw(
                     &self.colorwheel,
                     graphics::DrawParam::new()
-                        .dest([WINSIZE + offsetfromedge, 330.])
+                        .dest([WINSIZE + offsetfromedge + 50., 300.])
                         .scale([0.3, 0.3]),
                 );
             }
@@ -1468,13 +1273,13 @@ impl event::EventHandler<ggez::GameError> for MainState {
                 );
             }
 
-            if self.clusterflag == true {
+            if (self.clusterflagcolor == true) && (self.clusterflag == true) {
                 if self.partilist.len() > 0 {
-                    canvas.draw(
-                        graphics::Text::new(format!("Cluster nMin: {:.1}", self.dbscannmin))
-                            .set_scale(PxScale::from(30.)),
-                        Vec2::new(WINSIZE + offsetfromedge, 670.0),
-                    );
+                    // canvas.draw(
+                    //     graphics::Text::new(format!("Cluster nMin: {:.1}", self.dbscannmin))
+                    //         .set_scale(PxScale::from(30.)),
+                    //     Vec2::new(WINSIZE + offsetfromedge, 670.0),
+                    // );
 
                     // getting ordered cluster map for use in statistics
 
@@ -1499,23 +1304,23 @@ impl event::EventHandler<ggez::GameError> for MainState {
 
                     // let mut numclusters =
                     canvas.draw(
-                        graphics::Text::new(format!("Num of Clusters {:.1}", numclus))
+                        graphics::Text::new(format!("Num of Clusters: {:.1}", numclus))
                             .set_scale(PxScale::from(30.)),
-                        Vec2::new(WINSIZE + offsetfromedge + secondcolumn, 670.0),
+                        Vec2::new(WINSIZE + offsetfromedge + secondcolumn, 520.0),
                     );
-                    canvas.draw(
-                        graphics::Text::new(format!("Cluster min dist: {:.2}", self.dbscanepsilon))
-                            .set_scale(PxScale::from(30.)),
-                        Vec2::new(WINSIZE + offsetfromedge, 700.0),
-                    );
+                    // canvas.draw(
+                    //     graphics::Text::new(format!("Cluster min dist: {:.2}", self.dbscanepsilon))
+                    //         .set_scale(PxScale::from(30.)),
+                    //     Vec2::new(WINSIZE + offsetfromedge, 700.0),
+                    // );
                     // could create histogram of this would be quite cool
                     canvas.draw(
                         graphics::Text::new(format!(
-                            "Max clus : {:.2}%",
+                            "Max Cluster Size : {:.2}%",
                             100 * max_clus_size / self.partilist.len()
                         ))
                         .set_scale(PxScale::from(30.)),
-                        Vec2::new(WINSIZE + offsetfromedge + secondcolumn, 700.0),
+                        Vec2::new(WINSIZE + offsetfromedge + secondcolumn, 550.0),
                     );
                     let mut numnoise: usize = 0;
                     if self.clustermap.contains_key(&-1) {
@@ -1523,12 +1328,37 @@ impl event::EventHandler<ggez::GameError> for MainState {
                             / self.partilist.len();
                     }
                     canvas.draw(
-                        graphics::Text::new(format!("Num Noise : {:.2}%", numnoise))
+                        graphics::Text::new(format!("Num Noise: {:.2}%", numnoise))
                             .set_scale(PxScale::from(30.)),
-                        Vec2::new(WINSIZE + offsetfromedge + secondcolumn, 730.0),
+                        Vec2::new(WINSIZE + offsetfromedge + secondcolumn, 580.0),
                     );
                 }
             }
+            if self.partilist.len() > 0 {
+                if self.clusterflag == true {
+                    if self.clusterflagcenter == true {
+                        canvas.draw(
+                            graphics::Text::new(format!(
+                                "Num Vortices: {:.2}",
+                                self.simplevortexnum
+                            ))
+                            .set_scale(PxScale::from(30.)),
+                            Vec2::new(WINSIZE + offsetfromedge + secondcolumn, 640.0),
+                        );
+                    }
+                }
+                if self.vortexdetection == true {
+                    canvas.draw(
+                        graphics::Text::new(format!(
+                            "Improved Num Vortices: {:.2}",
+                            self.vortexnum
+                        ))
+                        .set_scale(PxScale::from(30.)),
+                        Vec2::new(WINSIZE + offsetfromedge + secondcolumn, 670.0),
+                    );
+                }
+            }
+            // }
             // let mut fullindicies = Vec::new();
             // for i in 0..self.partilist.len() {
             //     fullindicies.push(i);
@@ -1725,39 +1555,39 @@ impl event::EventHandler<ggez::GameError> for MainState {
             //     ),
             // );
 
-            // // Drawing surrounding box
-            // let rect = graphics::Rect::new(WINSIZE, 0.0, 3.0, WINSIZE);
-            // canvas.draw(
-            //     &graphics::Quad,
-            //     graphics::DrawParam::new()
-            //         .dest(rect.point())
-            //         .scale(rect.size())
-            //         .color(Color::WHITE),
-            // );
-            // let rect = graphics::Rect::new(0.0, 0.0, WINSIZE, 3.0);
-            // canvas.draw(
-            //     &graphics::Quad,
-            //     graphics::DrawParam::new()
-            //         .dest(rect.point())
-            //         .scale(rect.size())
-            //         .color(Color::WHITE),
-            // );
-            // let rect = graphics::Rect::new(0.0, 0.0, 3.0, WINSIZE);
-            // canvas.draw(
-            //     &graphics::Quad,
-            //     graphics::DrawParam::new()
-            //         .dest(rect.point())
-            //         .scale(rect.size())
-            //         .color(Color::WHITE),
-            // );
-            // let rect = graphics::Rect::new(0.0, WINSIZE - 3.0, WINSIZE, 3.0);
-            // canvas.draw(
-            //     &graphics::Quad,
-            //     graphics::DrawParam::new()
-            //         .dest(rect.point())
-            //         .scale(rect.size())
-            //         .color(Color::WHITE),
-            // );
+            // Drawing surrounding box
+            let rect = graphics::Rect::new(WINSIZE, 0.0, 3.0, WINSIZE);
+            canvas.draw(
+                &graphics::Quad,
+                graphics::DrawParam::new()
+                    .dest(rect.point())
+                    .scale(rect.size())
+                    .color(Color::WHITE),
+            );
+            let rect = graphics::Rect::new(0.0, 0.0, WINSIZE, 3.0);
+            canvas.draw(
+                &graphics::Quad,
+                graphics::DrawParam::new()
+                    .dest(rect.point())
+                    .scale(rect.size())
+                    .color(Color::WHITE),
+            );
+            let rect = graphics::Rect::new(0.0, 0.0, 3.0, WINSIZE);
+            canvas.draw(
+                &graphics::Quad,
+                graphics::DrawParam::new()
+                    .dest(rect.point())
+                    .scale(rect.size())
+                    .color(Color::WHITE),
+            );
+            let rect = graphics::Rect::new(0.0, WINSIZE - 3.0, WINSIZE, 3.0);
+            canvas.draw(
+                &graphics::Quad,
+                graphics::DrawParam::new()
+                    .dest(rect.point())
+                    .scale(rect.size())
+                    .color(Color::WHITE),
+            );
 
             // Finish Drawing
             canvas.finish(ctx)?;
@@ -1775,7 +1605,7 @@ pub fn main() -> GameResult {
     use ggez::conf;
     let cb = ggez::ContextBuilder::new("Vicsek", "Rob Smith")
         .window_setup(conf::WindowSetup::default().title("Vicsek Demo"))
-        .window_mode(ggez::conf::WindowMode::default().dimensions(WINSIZE + 710.0, WINSIZE));
+        .window_mode(ggez::conf::WindowMode::default().dimensions(WINSIZE + 850.0, WINSIZE));
     let (mut ctx, event_loop) = cb.build()?;
     let state = MainState::new(&mut ctx)?;
     event::run(ctx, event_loop, state)
